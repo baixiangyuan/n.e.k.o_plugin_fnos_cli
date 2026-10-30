@@ -16,6 +16,10 @@ from pathlib import Path
 import pytest
 
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
+# 实现模块：plugin.toml 的 [plugin].entry 指向 plugin.py:FnOsCliPlugin。
+# 根目录 __init__.py 只是惰性转发的门面（裸 import 不拉宿主 SDK），
+# 因此所有静态检查都针对 plugin.py。
+ENTRY_MODULE = PLUGIN_DIR / "plugin.py"
 
 
 def _load_manifest() -> dict:
@@ -24,7 +28,7 @@ def _load_manifest() -> dict:
 
 
 def _parse_entry_module() -> ast.Module:
-    return ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+    return ast.parse(ENTRY_MODULE.read_text(encoding="utf-8"))
 
 
 def _entry_ids() -> set[str]:
@@ -174,8 +178,61 @@ def test_dashboard_ui_context_is_declared() -> None:
     assert "dashboard" in _ui_context_ids()
 
 
+def test_manifest_entry_points_at_the_implementation_module() -> None:
+    """[plugin].entry 必须指向实现模块，而不是惰性转发的根 __init__.py。
+
+    根 __init__.py 用 __getattr__ 转发，宿主按 manifest 加载；测试按文件路径
+    静态检查实现模块。两边写同一个类名才不会漂移。
+    """
+    manifest = _load_manifest()
+    module_name, _, class_name = manifest["plugin"]["entry"].partition(":")
+    assert module_name == "plugin.plugins.fnos_cli.plugin", module_name
+    assert class_name == "FnOsCliPlugin", class_name
+    assert (PLUGIN_DIR / "plugin.py").is_file()
+
+
+def test_root_module_is_a_lazy_facade() -> None:
+    """根 __init__.py 不得在顶层 import 宿主 SDK。
+
+    pytest 收集 tests/ 时会把插件根目录当 package 导入；顶层 import
+    `plugin.sdk.plugin` 在没有宿主的独立环境里会直接 ModuleNotFoundError，
+    整个测试套件连收集都过不去。惰性转发是市场的既有做法。
+    """
+    tree = ast.parse((PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            if node.col_offset != 0:
+                continue
+            module = node.module if isinstance(node, ast.ImportFrom) else None
+            if module is None and isinstance(node, ast.Import):
+                module = node.names[0].name
+            assert not str(module).startswith("plugin."), (
+                f"root __init__.py must not import the host SDK at top level: {module}"
+            )
+
+
+def test_lifecycle_handlers_are_declared() -> None:
+    """startup / config_change / shutdown 三个生命周期都要有。
+
+    市场的 release check 会警告缺 shutdown；宿主卸载或禁用插件时调用它。
+    """
+    found: set[str] = set()
+    for node in ast.walk(_parse_entry_module()):
+        if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            if getattr(decorator.func, "attr", getattr(decorator.func, "id", "")) != "lifecycle":
+                continue
+            for keyword in decorator.keywords:
+                if keyword.arg == "id" and isinstance(keyword.value, ast.Constant):
+                    found.add(keyword.value.value)
+    assert {"startup", "config_change", "shutdown"} <= found, sorted(found)
+
+
 def test_run_entry_declares_command_schema() -> None:
-    source = (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
+    source = ENTRY_MODULE.read_text(encoding="utf-8")
     assert '"command"' in source, "run entry should document a command field"
 
 

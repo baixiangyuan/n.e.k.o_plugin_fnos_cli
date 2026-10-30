@@ -10,7 +10,7 @@ keywords = [
 ]
 version = "0.5.1"
 type = "plugin"
-entry = "plugin.plugins.fnos_cli:FnOsCliPlugin"
+entry = "plugin.plugins.fnos_cli.plugin:FnOsCliPlugin"
 
 [plugin.author]
 name = "fnos-cli skill"

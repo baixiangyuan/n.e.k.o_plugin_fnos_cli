@@ -27,12 +27,14 @@
 ```text
 fnos_cli/
 ├── plugin.toml          # 插件身份、UI surface 声明、默认配置
-├── __init__.py          # FnOsCliPlugin：入口点、面板上下文、写操作确认
+├── __init__.py          # 惰性门面：__getattr__ 转发到 plugin.py（不拉宿主 SDK）
+├── plugin.py            # FnOsCliPlugin：入口点、面板上下文、写操作确认
 ├── _cli.py              # 启动器定位、argv 构造、异步执行与解码
 ├── config.example.toml  # 运行时配置模板
 ├── ui/panel.tsx         # Hosted TSX 面板
 ├── docs/quickstart.md   # 接入与授权指南
 ├── locales/             # zh-CN（默认）/ en
+├── tests/               # 静态契约冒烟测试（不依赖宿主 SDK）
 ├── scripts/             # 固定版本的 fnos-cli 启动器
 └── runtime-manifest.json# 启动器校验用的固定清单（SHA-256 绑定）
 ```
@@ -89,6 +91,6 @@ Agent 应先向用户复述目标与影响，再带 `confirmed=true` 重调；�
 ## 已知边界
 
 - 面板只展示连接状态与最近一次执行结果，不缓存设备数据；每次刷新都会重新调用 `@ui.context`。
-- `run` 入口不做命令白名单，只做「阻断清单 + 写操作确认」两层控制。要收紧就改 `__init__.py` 里的
+- `run` 入口不做命令白名单，只做「阻断清单 + 写操作确认」两层控制。要收紧就改 `plugin.py` 里的
   `_BLOCKED_SUBCOMMANDS` / `_WRITE_SUBCOMMANDS`。
 - `photos preview --open` 需要设备侧浏览器，插件只返回地址，不负责打开。

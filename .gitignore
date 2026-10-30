@@ -1,7 +1,35 @@
+# Python
 __pycache__/
 *.py[cod]
+*.egg-info/
+.venv/
 .pytest_cache/
 .ruff_cache/
-.venv/
-vendor/
+
+# 本地依赖锁（插件无第三方依赖，锁文件不进仓库）
+uv.lock
+
+# 运行时数据（插件状态目录）
+store.db
+
+# 编辑器：.vscode/ 下的 settings.json 与 tasks.json 是插件市场规范要求的
+# 仓库支持文件，必须提交；其余本地编辑器产物仍忽略。
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+.idea/
+*.swp
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 打包产物
 *.neko-plugin
+dist/
+build/
+
+# 日志
+*.log
+artifacts/

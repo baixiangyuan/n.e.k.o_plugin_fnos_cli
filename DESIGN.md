@@ -5,7 +5,7 @@
 - plugin_id: `fnos_cli`
 - folder: `fnos_cli/`
 - name: fnOS 管理
-- entry: `plugin.plugins.fnos_cli:FnOsCliPlugin`
+- entry: `plugin.plugins.fnos_cli.plugin:FnOsCliPlugin`
 - main class: `FnOsCliPlugin`
 
 ## Purpose
@@ -18,7 +18,7 @@
 
 - package type: `plugin`
 - capabilities: 外部设备/CLI 集成、Hosted TSX 面板、Markdown 指南、typed settings、键值 store
-- inferred architecture: 单插件类 + 一个 CLI 执行辅助模块；不引入 Router（入口数量与主文件规模都在单文件可维护范围内）
+- inferred architecture: 单插件类（`plugin.py`）+ 一个 CLI 执行辅助模块（`_cli.py`）；不引入 Router。根 `__init__.py` 只做 `__getattr__` 惰性转发
 
 ## First Version Scope
 
@@ -41,12 +41,12 @@
 
 - plugin.toml sections: `[plugin]`、`[plugin.author]`、`[plugin.sdk]`、`[plugin.i18n]`、
   `[plugin_runtime]`、`[plugin.store]`、`[plugin.ui]`、`[fnos_cli]`
-- SDK surfaces: `NekoPluginBase`、`@neko_plugin`、`@plugin_entry`、`@lifecycle(startup/config_change)`、
+- SDK surfaces: `NekoPluginBase`、`@neko_plugin`、`@plugin_entry`、`@lifecycle(startup/config_change/shutdown)`、
   `@ui.context`、`@ui.action`、`tr()`、`PluginSettings`/`SettingsField`、`Ok`/`Err`/`SdkError`
 - UI surfaces: 一个 `panel`（hosted-tsx）+ 一个 `guide`（markdown），permissions 取最小集
   `state:read` / `config:read` / `action:call`
 - state/config: 配置走 `PluginSettings`（`[fnos_cli]` section）；`last_result` 仅存进程内最近一次执行摘要，不落 store
-- lifecycle/background work: 仅 startup 检测启动器与平台，config_change 重载配置
+- lifecycle/background work: 仅 startup 检测启动器与平台，config_change 重载配置，shutdown 丢弃进程内缓存
 - external integrations: 子进程调用随包启动器；`TRIM_CLI_DISTRIBUTION=fnos` 固定分发标识
 
 ## Read Context Plan

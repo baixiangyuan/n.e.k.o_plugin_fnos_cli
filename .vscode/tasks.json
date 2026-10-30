@@ -1,0 +1,41 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "N.E.K.O: check fnos_cli",
+      "type": "shell",
+      "command": "uv run python -m plugin.neko_plugin_cli.cli check fnos_cli",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "N.E.K.O: sync fnos_cli",
+      "type": "shell",
+      "command": "uv run --with pip python -m plugin.neko_plugin_cli.cli sync fnos_cli --clean",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "N.E.K.O: check -r fnos_cli",
+      "type": "shell",
+      "command": "uv run python -m plugin.neko_plugin_cli.cli check -r fnos_cli",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "N.E.K.O: build fnos_cli",
+      "type": "shell",
+      "command": "uv run python -m plugin.neko_plugin_cli.cli build fnos_cli",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
