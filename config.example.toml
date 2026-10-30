@@ -1,0 +1,17 @@
+[fnos_cli]
+# 默认连接目标。host 为空表示未设置，需要在面板或入口里显式指定。
+# 回环默认 localhost:5666；远端 IP 默认 5667；远端域名默认 443。
+host = ""
+port = 5666
+# auto：未显式指定端口时，回环用 http:5666，远端 IP 用 https:5667，远端域名用 https:443。
+scheme = "auto"
+# profile 名：仅允许 ASCII 字母、数字、_ - . ；登录状态按 profile 隔离。
+profile = "home"
+# 高危写操作是否需要显式确认。true 时入口要求 confirmed=true 才执行。
+require_confirmation = true
+# 单条 CLI 命令最长执行秒数（5-3600）。拉镜像、导出日志等操作本身较慢。
+timeout_seconds = 300
+# CLI 工作目录。留空使用插件状态目录下的运行目录。
+working_dir = ""
+# 是否把 CLI 原始 stdout/stderr 一并返回给调用方。
+return_raw_output = false

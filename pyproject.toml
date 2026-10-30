@@ -1,0 +1,12 @@
+[project]
+name = "fnos_cli"
+version = "0.5.1"
+description = "Manage fnOS devices through fnos-cli: system, storage, files, Docker, downloads, apps, logs, monitoring, network, users, and Baidu Netdisk."
+requires-python = ">=3.10"
+# 无第三方依赖：CLI 调用走标准库 asyncio/shlex/subprocess。
+dependencies = []
+
+[tool.pytest.ini_options]
+# 插件根目录的 __init__.py 就是宿主加载入口。tests/ 不放 __init__.py，
+# pytest 才会把它当作独立 rootdir 收集，不会提前 import 插件包。
+testpaths = ["tests"]
