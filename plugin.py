@@ -28,8 +28,10 @@ from plugin.sdk.plugin import (
     lifecycle,
     neko_plugin,
     plugin_entry,
-    tr,
     ui,
+)
+from plugin.sdk.plugin import (
+    tr as _sdk_tr,
 )
 
 from ._cli import (
@@ -110,6 +112,37 @@ def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(minimum, min(result, maximum))
+
+
+def _t(key: str, default: str = "", **params: Any) -> str:
+    """翻译，保证返回值一定是 str。
+
+    回归点：宿主上报 `'dict' object has no attribute 'format'`，说明 SDK 的
+    `tr()` 返回值不保证是 str（观察到的形态是 {key, value, locale} 记录）。
+    插件里 75 处 tr() 的结果都会进装饰器参数或返回给前端，任何一处漏掉都会
+    让面板/入口显示原始 dict 或直接抛异常。统一在这里归一化。
+    """
+    translated = _sdk_tr(key, default=default, **params)
+    if isinstance(translated, str):
+        return translated
+    # 非 str：退回 default；default 也异常时退回 key，绝不返回 dict。
+    if isinstance(default, str) and default:
+        return default
+    return key
+
+
+def _fmt(key: str, default: str, **params: Any) -> str:
+    """翻译 + 插值，保证拿到的一定是 str。
+
+    与 `_t` 同样做归一化，再插值；占位符缺失时保留原文而不是抛 KeyError。
+    """
+    translated = _t(key, default)
+    if not params:
+        return translated
+    try:
+        return translated.format(**params)
+    except (KeyError, IndexError, ValueError):
+        return translated
 
 
 @neko_plugin
@@ -318,13 +351,14 @@ class FnOsCliPlugin(NekoPluginBase):
             rendered = " ".join(shlex.quote(t) for t in tokens)
             return {
                 "status": "clarify",
-                "summary": tr(
+                "summary": _fmt(
                     "fnos.confirm_write",
-                    default="这是写操作，会影响 fnOS 设备状态：{command}。确认执行吗？",
-                ).format(command=rendered),
+                    "这是写操作，会影响 fnOS 设备状态：{command}。确认执行吗？",
+                    command=rendered,
+                ),
                 "choices": [
-                    tr("fnos.confirm_yes", default="确认执行"),
-                    tr("fnos.confirm_no", default="取消"),
+                    _t("fnos.confirm_yes", default="确认执行"),
+                    _t("fnos.confirm_no", default="取消"),
                 ],
                 "context": {
                     "command": rendered,
@@ -338,6 +372,12 @@ class FnOsCliPlugin(NekoPluginBase):
         effective_profile = self._validate_profile(
             _as_text(profile) or _as_text(self._setting("profile", "home"))
         )
+        # Skill entries/trim-shared.md：远端明文 HTTP 需要 --allow-insecure-http，
+        # 自签 HTTPS 需要 --tls-insecure。scheme=auto 时 CLI 会把远端 IP 推断成
+        # https:5667，而局域网 fnOS 通常是 http:5666 —— 不显式给 scheme 和这两个
+        # flag，生成的授权链接在浏览器里必然打不开。
+        allow_insecure_http = bool(self._setting("allow_insecure_http", False))
+        tls_insecure = bool(self._setting("tls_insecure", False))
 
         argv = list(tokens)
         if needs_confirm and "--yes" not in argv:
@@ -351,6 +391,8 @@ class FnOsCliPlugin(NekoPluginBase):
                 port=effective_port,
                 scheme=effective_scheme,
                 profile=effective_profile,
+                allow_insecure_http=allow_insecure_http,
+                tls_insecure=tls_insecure,
                 timeout_seconds=self._timeout(),
                 cwd=self._work_dir(),
             )
@@ -393,17 +435,19 @@ class FnOsCliPlugin(NekoPluginBase):
         self._last_result = payload
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip().splitlines()
-            payload["summary"] = (
-                tr("fnos.command_failed", default="命令执行失败（退出码 {code}）：{detail}")
-                .format(code=result.returncode, detail=detail[-1] if detail else "无错误输出")
+            payload["summary"] = _fmt(
+                "fnos.command_failed",
+                "命令执行失败（退出码 {code}）：{detail}",
+                code=result.returncode,
+                detail=detail[-1] if detail else "无错误输出",
             )
         else:
-            payload["summary"] = tr("fnos.command_ok", default="命令执行成功")
+            payload["summary"] = _t("fnos.command_ok", default="命令执行成功")
         return payload, None
 
     # ── 面板数据 ──
 
-    @ui.context(id="dashboard", title=tr("panel.title", default="fnOS 管理"))
+    @ui.context(id="dashboard", title=_t("panel.title", default="fnOS 管理"))
     async def dashboard_context(self) -> Dict[str, Any]:
         platform_info = await detect_platform(self.plugin_dir)
         return {
@@ -435,7 +479,7 @@ class FnOsCliPlugin(NekoPluginBase):
     # ── 连接与授权入口 ──
 
     @ui.action(
-        label=tr("actions.status.label", default="连接状态"),
+        label=_t("actions.status.label", default="连接状态"),
         icon="📡",
         group="connection",
         order=10,
@@ -443,8 +487,8 @@ class FnOsCliPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="status",
-        name=tr("entries.status.name", default="连接状态"),
-        description=tr(
+        name=_t("entries.status.name", default="连接状态"),
+        description=_t(
             "entries.status.description",
             default="查看启动器可用性、平台信息与当前默认连接参数。不连接设备。",
         ),
@@ -454,18 +498,20 @@ class FnOsCliPlugin(NekoPluginBase):
         platform_info = await detect_platform(self.plugin_dir)
         host = _as_text(self._setting("host", ""))
         summary = (
-            tr(
+            _fmt(
                 "fnos.status_ready",
-                default="启动器可用（{os}/{arch}），默认目标 {target}，profile {profile}。",
-            ).format(
+                "启动器可用（{os}/{arch}），默认目标 {target}，profile {profile}。",
                 os=platform_info.get("os"),
                 arch=normalize_arch(platform_info.get("arch", "")),
                 target=f"{host or 'localhost'}:{int(_clamp_int(self._setting('port', 5666), 5666, 1, 65535))}",
                 profile=_as_text(self._setting("profile", "home")),
             )
             if platform_info.get("launcher_ok")
-            else tr("fnos.status_no_launcher", default="启动器不可用：{error}")
-            .format(error=platform_info.get("launcher_error") or "unknown")
+            else _fmt(
+                "fnos.status_no_launcher",
+                "启动器不可用：{error}",
+                error=platform_info.get("launcher_error") or "unknown",
+            )
         )
         return Ok({
             "status": "ready" if platform_info.get("launcher_ok") else "unavailable",
@@ -481,7 +527,7 @@ class FnOsCliPlugin(NekoPluginBase):
         })
 
     @ui.action(
-        label=tr("actions.loginBegin.label", default="开始授权"),
+        label=_t("actions.loginBegin.label", default="开始授权"),
         icon="🔑",
         group="connection",
         order=20,
@@ -489,18 +535,18 @@ class FnOsCliPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="login_begin",
-        name=tr("entries.loginBegin.name", default="开始 OAuth 授权"),
-        description=tr(
+        name=_t("entries.loginBegin.name", default="开始 OAuth 授权"),
+        description=_t(
             "entries.loginBegin.description",
             default="生成 fnOS 授权链接。把链接交给用户在浏览器完成登录，再让用户回传一次性 code，然后调用 login_finish。login_finish 必须沿用本次返回的 connection 参数，否则 code 兑换失败。",
         ),
         input_schema={
             "type": "object",
             "properties": {
-                "host": {"type": "string", "description": tr("fields.host", default="fnOS 主机地址")},
-                "port": {"type": "integer", "description": tr("fields.port", default="端口")},
-                "scheme": {"type": "string", "enum": ["auto", "http", "https"], "description": tr("fields.scheme", default="协议")},
-                "profile": {"type": "string", "description": tr("fields.profile", default="CLI profile 名")},
+                "host": {"type": "string", "description": _t("fields.host", default="fnOS 主机地址")},
+                "port": {"type": "integer", "description": _t("fields.port", default="端口")},
+                "scheme": {"type": "string", "enum": ["auto", "http", "https"], "description": _t("fields.scheme", default="协议")},
+                "profile": {"type": "string", "description": _t("fields.profile", default="CLI profile 名")},
             },
         },
         llm_result_fields=["summary", "authorization_url", "authorization_pending", "connection"],
@@ -531,18 +577,18 @@ class FnOsCliPlugin(NekoPluginBase):
         if error is not None:
             return Err(error)
         if not isinstance(payload, dict):
-            return Err(SdkError(tr("fnos.unexpected", default="命令没有返回结果")))
+            return Err(SdkError(_t("fnos.unexpected", default="命令没有返回结果")))
 
         stdout = payload.get("stdout") or payload.get("stdout_tail") or ""
         url = _extract_url(stdout)
         if not url:
             return Err(SdkError(
-                tr("fnos.login_no_url", default="未能在 CLI 输出中找到授权链接；请检查 host/port 与设备连通性。")
+                _t("fnos.login_no_url", default="未能在 CLI 输出中找到授权链接；请检查 host/port 与设备连通性。")
             ))
         pending = "authorization_pending" in stdout or '"authorization_pending": true' in stdout
         return Ok({
             "status": "ready",
-            "summary": tr(
+            "summary": _t(
                 "fnos.login_begin_summary",
                 default="请在浏览器打开授权链接并登录，然后把页面显示的一次性 code 发回给我。",
             ),
@@ -553,7 +599,7 @@ class FnOsCliPlugin(NekoPluginBase):
         })
 
     @ui.action(
-        label=tr("actions.loginFinish.label", default="完成授权"),
+        label=_t("actions.loginFinish.label", default="完成授权"),
         icon="✅",
         group="connection",
         order=30,
@@ -561,19 +607,19 @@ class FnOsCliPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="login_finish",
-        name=tr("entries.loginFinish.name", default="完成 OAuth 授权"),
-        description=tr(
+        name=_t("entries.loginFinish.name", default="完成 OAuth 授权"),
+        description=_t(
             "entries.loginFinish.description",
             default="使用用户回传的一次性 code 完成登录。必须与 login_begin 使用同一执行主机、系统用户、profile 和连接参数。code 只在本次生效，不要复用。",
         ),
         input_schema={
             "type": "object",
             "properties": {
-                "code": {"type": "string", "description": tr("fields.code", default="用户回传的一次性授权 code")},
-                "host": {"type": "string", "description": tr("fields.host", default="fnOS 主机地址")},
-                "port": {"type": "integer", "description": tr("fields.port", default="端口")},
-                "scheme": {"type": "string", "enum": ["auto", "http", "https"], "description": tr("fields.scheme", default="协议")},
-                "profile": {"type": "string", "description": tr("fields.profile", default="CLI profile 名")},
+                "code": {"type": "string", "description": _t("fields.code", default="用户回传的一次性授权 code")},
+                "host": {"type": "string", "description": _t("fields.host", default="fnOS 主机地址")},
+                "port": {"type": "integer", "description": _t("fields.port", default="端口")},
+                "scheme": {"type": "string", "enum": ["auto", "http", "https"], "description": _t("fields.scheme", default="协议")},
+                "profile": {"type": "string", "description": _t("fields.profile", default="CLI profile 名")},
             },
             "required": ["code"],
         },
@@ -590,9 +636,9 @@ class FnOsCliPlugin(NekoPluginBase):
     ):
         clean_code = _as_text(code)
         if not clean_code:
-            return Err(SdkError(tr("fnos.code_required", default="缺少用户回传的授权 code。")))
+            return Err(SdkError(_t("fnos.code_required", default="缺少用户回传的授权 code。")))
         if "\n" in clean_code or "\r" in clean_code or len(clean_code) > 512:
-            return Err(SdkError(tr("fnos.code_invalid", default="code 格式不合法。")))
+            return Err(SdkError(_t("fnos.code_invalid", default="code 格式不合法。")))
         try:
             effective_host = self._validate_host(host)
             effective_profile = self._validate_profile(profile)
@@ -611,17 +657,18 @@ class FnOsCliPlugin(NekoPluginBase):
         if error is not None:
             return Err(error)
         if not isinstance(payload, dict):
-            return Err(SdkError(tr("fnos.unexpected", default="命令没有返回结果")))
+            return Err(SdkError(_t("fnos.unexpected", default="命令没有返回结果")))
         if payload.get("returncode") != 0:
-            return Err(SdkError(
-                tr("fnos.login_failed", default="登录失败：{detail}")
-                .format(detail=payload.get("summary") or "未知错误")
-            ))
+            return Err(SdkError(_fmt(
+                "fnos.login_failed",
+                "登录失败：{detail}",
+                detail=payload.get("summary") or "未知错误",
+            )))
         stdout = payload.get("stdout") or payload.get("stdout_tail") or ""
         persisted = '"token_persisted": true' in stdout or "token_persisted=true" in stdout
         return Ok({
             "status": "ready",
-            "summary": tr(
+            "summary": _t(
                 "fnos.login_done",
                 default="登录已完成，令牌已保存在 CLI 受控存储中。可以用 system info 做只读验证。",
             ),
@@ -630,7 +677,7 @@ class FnOsCliPlugin(NekoPluginBase):
         })
 
     @ui.action(
-        label=tr("actions.logout.label", default="退出登录"),
+        label=_t("actions.logout.label", default="退出登录"),
         icon="🚪",
         group="connection",
         order=40,
@@ -639,16 +686,16 @@ class FnOsCliPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="logout",
-        name=tr("entries.logout.name", default="退出登录"),
-        description=tr(
+        name=_t("entries.logout.name", default="退出登录"),
+        description=_t(
             "entries.logout.description",
             default="清除当前 profile 的本机登录会话。不影响服务端令牌撤销。",
         ),
         input_schema={
             "type": "object",
             "properties": {
-                "profile": {"type": "string", "description": tr("fields.profile", default="CLI profile 名")},
-                "confirmed": {"type": "boolean", "default": False, "description": tr("fields.confirmed", default="显式确认")},
+                "profile": {"type": "string", "description": _t("fields.profile", default="CLI profile 名")},
+                "confirmed": {"type": "boolean", "default": False, "description": _t("fields.confirmed", default="显式确认")},
             },
         },
     )
@@ -660,9 +707,12 @@ class FnOsCliPlugin(NekoPluginBase):
         if bool(self._setting("require_confirmation", True)) and not confirmed:
             return Ok({
                 "status": "clarify",
-                "summary": tr("fnos.confirm_logout", default="确认清除 profile {profile} 的本机登录会话？")
-                .format(profile=effective_profile or _as_text(self._setting("profile", "home"))),
-                "choices": [tr("fnos.confirm_yes", default="确认执行"), tr("fnos.confirm_no", default="取消")],
+                "summary": _fmt(
+                    "fnos.confirm_logout",
+                    "确认清除 profile {profile} 的本机登录会话？",
+                    profile=effective_profile or _as_text(self._setting("profile", "home")),
+                ),
+                "choices": [_t("fnos.confirm_yes", default="确认执行"), _t("fnos.confirm_no", default="取消")],
                 "context": {"profile": effective_profile, "confirmed": True},
             })
         payload, error = await self._execute(
@@ -672,13 +722,13 @@ class FnOsCliPlugin(NekoPluginBase):
             return Err(error)
         return Ok({
             "status": "ready",
-            "summary": tr("fnos.logout_done", default="已清除本机登录会话。"),
+            "summary": _t("fnos.logout_done", default="已清除本机登录会话。"),
         })
 
     # ── 通用命令入口 ──
 
     @ui.action(
-        label=tr("actions.run.label", default="执行命令"),
+        label=_t("actions.run.label", default="执行命令"),
         icon="▶️",
         group="command",
         order=10,
@@ -686,8 +736,8 @@ class FnOsCliPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="run",
-        name=tr("entries.run.name", default="执行 fnos-cli 命令"),
-        description=tr(
+        name=_t("entries.run.name", default="执行 fnos-cli 命令"),
+        description=_t(
             "entries.run.description",
             default=(
                 "执行一条 fnos-cli 命令，例如 `system info`、`storage overview`、"
@@ -700,7 +750,7 @@ class FnOsCliPlugin(NekoPluginBase):
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": tr(
+                    "description": _t(
                         "fields.command",
                         default="命令串，不含 fnos-cli 前缀，例如 `storage pools`",
                     ),
@@ -708,12 +758,12 @@ class FnOsCliPlugin(NekoPluginBase):
                 "confirmed": {
                     "type": "boolean",
                     "default": False,
-                    "description": tr("fields.confirmed", default="写操作显式确认"),
+                    "description": _t("fields.confirmed", default="写操作显式确认"),
                 },
-                "host": {"type": "string", "description": tr("fields.host", default="fnOS 主机地址")},
-                "port": {"type": "integer", "description": tr("fields.port", default="端口")},
-                "scheme": {"type": "string", "enum": ["auto", "http", "https"], "description": tr("fields.scheme", default="协议")},
-                "profile": {"type": "string", "description": tr("fields.profile", default="CLI profile 名")},
+                "host": {"type": "string", "description": _t("fields.host", default="fnOS 主机地址")},
+                "port": {"type": "integer", "description": _t("fields.port", default="端口")},
+                "scheme": {"type": "string", "enum": ["auto", "http", "https"], "description": _t("fields.scheme", default="协议")},
+                "profile": {"type": "string", "description": _t("fields.profile", default="CLI profile 名")},
             },
             "required": ["command"],
         },
@@ -733,7 +783,7 @@ class FnOsCliPlugin(NekoPluginBase):
         try:
             tokens = self._split_command(command)
             if not tokens:
-                return Err(SdkError(tr("fnos.command_empty", default="命令不能为空。")))
+                return Err(SdkError(_t("fnos.command_empty", default="命令不能为空。")))
             effective_host = self._validate_host(host)
             effective_profile = self._validate_profile(profile)
         except ValueError as exc:
@@ -750,16 +800,16 @@ class FnOsCliPlugin(NekoPluginBase):
         if error is not None:
             return Err(error)
         if not isinstance(payload, dict):
-            return Err(SdkError(tr("fnos.unexpected", default="命令没有返回结果")))
+            return Err(SdkError(_t("fnos.unexpected", default="命令没有返回结果")))
         payload = dict(payload)
-        payload.setdefault("summary", tr("fnos.command_ok", default="命令执行成功"))
+        payload.setdefault("summary", _t("fnos.command_ok", default="命令执行成功"))
         payload["command"] = " ".join(tokens)
         return Ok(payload)
 
     # ── 常用只读快捷入口 ──
 
     @ui.action(
-        label=tr("actions.systemInfo.label", default="系统信息"),
+        label=_t("actions.systemInfo.label", default="系统信息"),
         icon="🖥️",
         group="read",
         order=10,
@@ -767,8 +817,8 @@ class FnOsCliPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="system_info",
-        name=tr("entries.systemInfo.name", default="系统信息"),
-        description=tr(
+        name=_t("entries.systemInfo.name", default="系统信息"),
+        description=_t(
             "entries.systemInfo.description",
             default="读取 fnOS 机器类型、版本、卷等静态系统标识。只读，无需确认。",
         ),
@@ -781,7 +831,7 @@ class FnOsCliPlugin(NekoPluginBase):
         )
 
     @ui.action(
-        label=tr("actions.storageOverview.label", default="存储概览"),
+        label=_t("actions.storageOverview.label", default="存储概览"),
         icon="💾",
         group="read",
         order=20,
@@ -789,8 +839,8 @@ class FnOsCliPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="storage_overview",
-        name=tr("entries.storageOverview.name", default="存储概览"),
-        description=tr(
+        name=_t("entries.storageOverview.name", default="存储概览"),
+        description=_t(
             "entries.storageOverview.description",
             default="读取存储池、磁盘与空间总览。只读，无需确认。",
         ),
@@ -803,7 +853,7 @@ class FnOsCliPlugin(NekoPluginBase):
         )
 
     @ui.action(
-        label=tr("actions.storagePools.label", default="存储池列表"),
+        label=_t("actions.storagePools.label", default="存储池列表"),
         icon="🗄️",
         group="read",
         order=30,
@@ -811,8 +861,8 @@ class FnOsCliPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="storage_pools",
-        name=tr("entries.storagePools.name", default="存储池列表"),
-        description=tr(
+        name=_t("entries.storagePools.name", default="存储池列表"),
+        description=_t(
             "entries.storagePools.description",
             default="列出存储池（uuid / trim_* 标识）。只读，无需确认。",
         ),
@@ -825,7 +875,7 @@ class FnOsCliPlugin(NekoPluginBase):
         )
 
     @ui.action(
-        label=tr("actions.storageDisks.label", default="磁盘列表"),
+        label=_t("actions.storageDisks.label", default="磁盘列表"),
         icon="🛠️",
         group="read",
         order=40,
@@ -833,8 +883,8 @@ class FnOsCliPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="storage_disks",
-        name=tr("entries.storageDisks.name", default="磁盘列表"),
-        description=tr(
+        name=_t("entries.storageDisks.name", default="磁盘列表"),
+        description=_t(
             "entries.storageDisks.description",
             default="列出物理磁盘（纯设备名）。只读，无需确认。",
         ),
@@ -847,7 +897,7 @@ class FnOsCliPlugin(NekoPluginBase):
         )
 
     @ui.action(
-        label=tr("actions.monitorCpu.label", default="CPU 监控"),
+        label=_t("actions.monitorCpu.label", default="CPU 监控"),
         icon="📈",
         group="read",
         order=50,
@@ -855,8 +905,8 @@ class FnOsCliPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="monitor_cpu",
-        name=tr("entries.monitorCpu.name", default="CPU 监控"),
-        description=tr(
+        name=_t("entries.monitorCpu.name", default="CPU 监控"),
+        description=_t(
             "entries.monitorCpu.description",
             default="读取 CPU 时间序列指标。只读，无需确认。",
         ),
@@ -869,7 +919,7 @@ class FnOsCliPlugin(NekoPluginBase):
         )
 
     @ui.action(
-        label=tr("actions.monitorMemory.label", default="内存监控"),
+        label=_t("actions.monitorMemory.label", default="内存监控"),
         icon="🧠",
         group="read",
         order=60,
@@ -877,8 +927,8 @@ class FnOsCliPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="monitor_memory",
-        name=tr("entries.monitorMemory.name", default="内存监控"),
-        description=tr(
+        name=_t("entries.monitorMemory.name", default="内存监控"),
+        description=_t(
             "entries.monitorMemory.description",
             default="读取内存时间序列指标。只读，无需确认。",
         ),
@@ -891,7 +941,7 @@ class FnOsCliPlugin(NekoPluginBase):
         )
 
     @ui.action(
-        label=tr("actions.downloadList.label", default="下载任务"),
+        label=_t("actions.downloadList.label", default="下载任务"),
         icon="⬇️",
         group="read",
         order=70,
@@ -899,8 +949,8 @@ class FnOsCliPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="download_list",
-        name=tr("entries.downloadList.name", default="下载任务列表"),
-        description=tr(
+        name=_t("entries.downloadList.name", default="下载任务列表"),
+        description=_t(
             "entries.downloadList.description",
             default="列出下载任务。只读，无需确认。",
         ),
@@ -913,7 +963,7 @@ class FnOsCliPlugin(NekoPluginBase):
         )
 
     @ui.action(
-        label=tr("actions.dockerStats.label", default="Docker 状态"),
+        label=_t("actions.dockerStats.label", default="Docker 状态"),
         icon="🐳",
         group="read",
         order=80,
@@ -921,8 +971,8 @@ class FnOsCliPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="docker_stats",
-        name=tr("entries.dockerStats.name", default="Docker 状态"),
-        description=tr(
+        name=_t("entries.dockerStats.name", default="Docker 状态"),
+        description=_t(
             "entries.dockerStats.description",
             default="读取 Docker 总体状态。只读，无需确认。",
         ),
@@ -959,7 +1009,7 @@ class FnOsCliPlugin(NekoPluginBase):
         if error is not None:
             return Err(error)
         if not isinstance(payload, dict):
-            return Err(SdkError(tr("fnos.unexpected", default="命令没有返回结果")))
+            return Err(SdkError(_t("fnos.unexpected", default="命令没有返回结果")))
         payload = dict(payload)
         payload["command"] = " ".join(tokens)
         return Ok(payload)

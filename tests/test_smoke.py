@@ -438,6 +438,52 @@ def test_panel_uses_only_sdk_supported_props() -> None:
         assert re.search(r"<Inline\b[^>]*\bgap=", source), "Inline 需要显式 gap"
 
 
+def test_all_translations_are_normalized_to_str() -> None:
+    """所有 tr() 必须经 _t/_fmt 归一化，不得裸调 SDK 的 tr。
+
+    回归点：宿主上报 `'dict' object has no attribute 'format'` —— SDK 的 tr()
+    返回值不保证是 str（观察到的形态是 {key, value, locale} 记录）。插件里有
+    75 处 tr() 的结果会进装饰器参数或返回给前端，任何一处漏掉都会让面板显示
+    原始 dict 或直接抛异常。
+    """
+    source = ENTRY_MODULE.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    # SDK 的 tr 必须以改名形式导入，且只在 _t 内部调用一次。
+    imports = [
+        alias for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    ]
+    sdk_tr = [a for a in imports if a.name == "tr"]
+    assert sdk_tr, "plugin.py 必须从 SDK 导入 tr"
+    assert sdk_tr[0].asname == "_sdk_tr", "tr 必须以 asname 导入，避免被裸用"
+
+    sdk_tr_calls = 0
+    bare_tr_calls: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        if name == "_sdk_tr":
+            sdk_tr_calls += 1
+        elif name == "tr":
+            bare_tr_calls.append(node.lineno)
+    assert sdk_tr_calls == 1, f"_sdk_tr 应只在 _t 内调用一次，实际 {sdk_tr_calls} 次"
+    assert not bare_tr_calls, f"存在裸 tr() 调用: {bare_tr_calls}"
+
+    # _t 与 _fmt 必须存在，且 _t 做 isinstance(str) 归一化。
+    assert "def _t(" in source
+    assert "def _fmt(" in source
+    assert "isinstance(translated, str)" in source
+
+    # 裸 .format() 只允许出现在 _fmt 内部。
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
+            assert ast.unparse(node.func.value) == "translated", (
+                f"第 {node.lineno} 行有裸 .format()，应改用 _fmt"
+            )
+
+
 def test_launcher_scripts_are_not_modified() -> None:
     """启动器与清单必须与 Skill 包一致：启动器内部有硬编码 SHA-256 校验。"""
     source_dir = PLUGIN_DIR.parent / "fnos" / "scripts"

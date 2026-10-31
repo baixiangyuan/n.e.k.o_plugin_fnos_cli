@@ -140,6 +140,9 @@ def _connection_args(
     port: Optional[int],
     scheme: str,
     profile: str,
+    *,
+    allow_insecure_http: bool = False,
+    tls_insecure: bool = False,
 ) -> List[str]:
     args: List[str] = []
     host = (host or "").strip()
@@ -153,6 +156,13 @@ def _connection_args(
     profile = (profile or "").strip()
     if profile:
         args += ["--profile", profile]
+    # Skill entries/trim-shared.md：远端明文 HTTP 需要显式 --allow-insecure-http，
+    # 自签 HTTPS 需要显式 --tls-insecure。缺了这两个 flag，CLI 会按 scheme=auto
+    # 把远端 IP 推断成 https:5667，生成的授权链接浏览器打不开。
+    if allow_insecure_http:
+        args.append("--allow-insecure-http")
+    if tls_insecure:
+        args.append("--tls-insecure")
     return args
 
 
@@ -164,6 +174,8 @@ async def run_cli(
     port: Optional[int] = None,
     scheme: str = "auto",
     profile: str = "",
+    allow_insecure_http: bool = False,
+    tls_insecure: bool = False,
     timeout_seconds: float = 300.0,
     env_extra: Optional[Dict[str, str]] = None,
     cwd: Optional[Path] = None,
@@ -171,7 +183,15 @@ async def run_cli(
     """执行 fnos-cli 并捕获 stdout/stderr。不抛异常即代表进程正常结束。"""
     launcher = resolve_launcher(plugin_dir)
     prefix, _shell = build_invocation(launcher)
-    argv = [*prefix, *_connection_args(host, port, scheme, profile), *[str(a) for a in args]]
+    argv = [
+        *prefix,
+        *_connection_args(
+            host, port, scheme, profile,
+            allow_insecure_http=allow_insecure_http,
+            tls_insecure=tls_insecure,
+        ),
+        *[str(a) for a in args],
+    ]
 
     env = dict(os.environ)
     # 固定分发标识，避免启动器从环境里读到其他产品的设置。
