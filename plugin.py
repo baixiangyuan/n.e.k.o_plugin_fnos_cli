@@ -70,6 +70,9 @@ _WRITE_SUBCOMMANDS = {
 }
 
 # 完全不开放给插件的命令（Skill 明确不适用或需要交互 TTY）。
+# login 组只放行 login_begin / login_finish 自己构造的两个 flag；
+# 交互式 login（在 CLI 提示里输入 code）会阻塞等待 TTY，必须拦住。
+_LOGIN_ALLOWED_FLAGS = {"--authorize-only", "--code"}
 _BLOCKED_SUBCOMMANDS = {
     "media": {"*"},
     "login": {"*"},  # 登录只走专用入口
@@ -243,6 +246,11 @@ class FnOsCliPlugin(NekoPluginBase):
         if not tokens:
             return False
         group = tokens[0]
+        # 两段式授权放行的两种 login 形状本来就走 confirmed=True，
+        # 且 Skill 的 login 命令不接受 --yes，不能让它们进入写操作分支。
+        if group == "login":
+            if self._is_login_authorize_shape(tokens) or self._is_login_code_shape(tokens):
+                return False
         if group in _BLOCKED_SUBCOMMANDS:
             blocked = _BLOCKED_SUBCOMMANDS[group]
             if "*" in blocked:
@@ -260,12 +268,34 @@ class FnOsCliPlugin(NekoPluginBase):
         group = tokens[0]
         blocked = _BLOCKED_SUBCOMMANDS.get(group)
         if blocked:
+            # login 组只放行 login_begin / login_finish 自己构造的两种形状：
+            #   login --authorize-only
+            #   login --code <value>
+            # 交互式 login（阻塞等 TTY）、--refresh、--no-open 以及任何多出来的
+            # flag 或缺值的 --code 一律拦下。
+            if group == "login":
+                if self._is_login_authorize_shape(tokens) or self._is_login_code_shape(tokens):
+                    return None
+                return "`login` 命令不在本插件开放范围内；请使用 login_begin / login_finish 入口"
             if "*" in blocked:
                 return f"`{group}` 命令不在本插件开放范围内"
             for token in tokens[1:]:
                 if token in blocked:
                     return f"`{group} {token}` 不在本插件开放范围内"
         return None
+
+    @staticmethod
+    def _is_login_authorize_shape(tokens: List[str]) -> bool:
+        """恰好 `login --authorize-only`。"""
+        return tokens == ["login", "--authorize-only"]
+
+    @staticmethod
+    def _is_login_code_shape(tokens: List[str]) -> bool:
+        """恰好 `login --code <value>`，value 非空且不是另一个 flag。"""
+        if len(tokens) != 3:
+            return False
+        flag, value = tokens[1], tokens[2]
+        return flag == "--code" and bool(value) and not value.startswith("-")
 
     async def _execute(
         self,
@@ -286,7 +316,7 @@ class FnOsCliPlugin(NekoPluginBase):
         require = bool(self._setting("require_confirmation", True))
         if needs_confirm and require and not confirmed:
             rendered = " ".join(shlex.quote(t) for t in tokens)
-            return Ok({
+            return {
                 "status": "clarify",
                 "summary": tr(
                     "fnos.confirm_write",
@@ -300,7 +330,7 @@ class FnOsCliPlugin(NekoPluginBase):
                     "command": rendered,
                     "confirmed": True,
                 },
-            }), None
+            }, None
 
         effective_host = _as_text(host) or _as_text(self._setting("host", ""))
         effective_port = int(port) if port else int(_clamp_int(self._setting("port", 5666), 5666, 1, 65535))
@@ -336,7 +366,7 @@ class FnOsCliPlugin(NekoPluginBase):
                 payload["stdout"] = exc.stdout
                 payload["stderr"] = exc.stderr
             self._last_result = payload
-            return Ok(payload), None
+            return payload, None
         except ValueError as exc:
             return None, SdkError(str(exc))
 
@@ -344,6 +374,15 @@ class FnOsCliPlugin(NekoPluginBase):
             "status": "ok" if result.returncode == 0 else "error",
             "returncode": result.returncode,
             "duration_ms": result.duration_ms,
+            # 回显生效的连接参数：两段式授权要求 login_begin 与 login_finish
+            # 使用完全相同的 host/port/scheme/profile，否则 pending verifier
+            # 对不上、code 兑换失败（Skill reference/oauth.md）。
+            "connection": {
+                "host": effective_host,
+                "port": effective_port,
+                "scheme": effective_scheme,
+                "profile": effective_profile,
+            },
         }
         if bool(self._setting("return_raw_output", False)):
             payload["stdout"] = result.stdout
@@ -360,7 +399,7 @@ class FnOsCliPlugin(NekoPluginBase):
             )
         else:
             payload["summary"] = tr("fnos.command_ok", default="命令执行成功")
-        return Ok(payload), None
+        return payload, None
 
     # ── 面板数据 ──
 
@@ -453,7 +492,7 @@ class FnOsCliPlugin(NekoPluginBase):
         name=tr("entries.loginBegin.name", default="开始 OAuth 授权"),
         description=tr(
             "entries.loginBegin.description",
-            default="生成 fnOS 授权链接。把链接交给用户在浏览器完成登录，再让用户回传一次性 code，然后调用 login_finish。",
+            default="生成 fnOS 授权链接。把链接交给用户在浏览器完成登录，再让用户回传一次性 code，然后调用 login_finish。login_finish 必须沿用本次返回的 connection 参数，否则 code 兑换失败。",
         ),
         input_schema={
             "type": "object",
@@ -464,7 +503,7 @@ class FnOsCliPlugin(NekoPluginBase):
                 "profile": {"type": "string", "description": tr("fields.profile", default="CLI profile 名")},
             },
         },
-        llm_result_fields=["summary", "authorization_url", "authorization_pending"],
+        llm_result_fields=["summary", "authorization_url", "authorization_pending", "connection"],
     )
     async def login_begin(
         self,
@@ -509,6 +548,8 @@ class FnOsCliPlugin(NekoPluginBase):
             ),
             "authorization_url": url,
             "authorization_pending": bool(pending),
+            # 调用方回传 code 时必须沿用这组参数，否则 code 兑换失败。
+            "connection": payload.get("connection"),
         })
 
     @ui.action(
@@ -536,7 +577,7 @@ class FnOsCliPlugin(NekoPluginBase):
             },
             "required": ["code"],
         },
-        llm_result_fields=["summary", "token_persisted"],
+        llm_result_fields=["summary", "token_persisted", "connection"],
     )
     async def login_finish(
         self,
@@ -585,6 +626,7 @@ class FnOsCliPlugin(NekoPluginBase):
                 default="登录已完成，令牌已保存在 CLI 受控存储中。可以用 system info 做只读验证。",
             ),
             "token_persisted": bool(persisted),
+            "connection": payload.get("connection"),
         })
 
     @ui.action(

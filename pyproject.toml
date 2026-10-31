@@ -1,6 +1,6 @@
 [project]
 name = "fnos_cli"
-version = "0.5.1"
+version = "0.5.2"
 description = "Manage fnOS devices through fnos-cli: system, storage, files, Docker, downloads, apps, logs, monitoring, network, users, and Baidu Netdisk."
 requires-python = ">=3.10"
 # 无第三方依赖：CLI 调用走标准库 asyncio/shlex/subprocess。

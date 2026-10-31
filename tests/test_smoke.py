@@ -257,6 +257,101 @@ def test_blocked_subcommands_cover_media_and_login() -> None:
     assert "login" in blocked
 
 
+def test_login_gate_lets_the_authorization_entries_through() -> None:
+    """login_begin / login_finish 构造的两种 login 形状必须能过门禁。
+
+    回归点：`_BLOCKED_SUBCOMMANDS["login"] = {"*"}` 曾把整组 login 都拦下，
+    两个授权入口自己构造的 `login --authorize-only` / `login --code <code>`
+    被自己的门禁挡住，从上线起就返回
+    "`login` 命令不在本插件开放范围内"，授权流程完全跑不通。
+    """
+    source = ENTRY_MODULE.read_text(encoding="utf-8")
+
+    # 两个入口构造的命令形状。
+    assert '["login", "--authorize-only"]' in source
+    assert '["login", "--code", clean_code]' in source
+
+    # 门禁必须为 login 组开形状化的口子，而不是继续整组拦死。
+    assert "_is_login_authorize_shape" in source
+    assert "_is_login_code_shape" in source
+    assert "_LOGIN_ALLOWED_FLAGS" in source
+
+    # 形状判定必须是全等比较：`login`、`login --refresh`、缺值的
+    # `login --code` 都不能被放行。
+    assert 'tokens == ["login", "--authorize-only"]' in source
+    assert "len(tokens) != 3" in source
+
+
+def test_login_gate_still_blocks_interactive_login() -> None:
+    """交互式 login 与刷新授权仍必须拦住。
+
+    Skill reference/oauth.md：普通 login 会在 CLI 提示里输入 code，
+    阻塞等待 TTY，插件里无法完成；`--refresh`、`--no-open` 也不在两段式
+    授权流程内。放开 shapes 的同时不能把这些一起放进来。
+
+    只扫字符串常量与可执行代码：注释里点名这些 flag 是在说明门禁设计，
+    不算引用。
+    """
+    source = ENTRY_MODULE.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    literals = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    for forbidden in ("--refresh", "--no-open"):
+        assert forbidden not in literals, f"插件不得把 {forbidden} 写进命令参数"
+    # 拦下时的提示要指回专用入口，而不是只说"不在范围内"。
+    assert any("login_begin / login_finish" in value for value in literals)
+
+
+def test_execute_helper_returns_plain_payload_not_ok_wrapper() -> None:
+    """`_execute` 必须返回 `(dict, error)`，不能把 payload 包进 Ok()。
+
+    回归点：`_execute` 曾 `return Ok(payload), None`，调用方解包后拿到的是
+    SDK 的 Result 对象而不是 dict，`isinstance(payload, dict)` 永远为 False，
+    于是 login_begin / login_finish / run 全部返回"命令没有返回结果"。
+    SDK 的 Ok/Err 是单一对象（moneta_fx stub 同样不可解包成元组），
+    只有插件入口层才该用它们包装返回值。
+    """
+    source = ENTRY_MODULE.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    # 定位 _execute 的整个函数体。
+    body = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_execute":
+            body = node.body
+            break
+    assert body is not None, "_execute not found"
+
+    for node in ast.walk(ast.Module(body=body, type_ignores=[])):
+        if not isinstance(node, ast.Return) or node.value is None:
+            continue
+        # 每个 return 要么是 (dict, None)，要么是 (None, SdkError)；
+        # 不允许出现 Ok(...) 作为返回值的第一个元素。
+        if isinstance(node.value, ast.Tuple) and len(node.value.elts) == 2:
+            first = node.value.elts[0]
+            assert not (isinstance(first, ast.Call)
+                        and getattr(first.func, "id", None) == "Ok"), (
+                f"_execute 第 {node.lineno} 行把 payload 包进了 Ok()"
+            )
+
+
+def test_login_entries_echo_connection_parameters() -> None:
+    """两段式授权要求两次调用使用完全相同的连接参数。
+
+    Skill reference/oauth.md：login_begin 与 login_finish 必须保持相同
+    host/port/scheme/TLS 选项，否则 pending verifier 对不上、code 兑换失败。
+    因此 _execute 要把生效参数回显出来，两个入口都要转发给调用方。
+    """
+    source = ENTRY_MODULE.read_text(encoding="utf-8")
+    assert '"connection"' in source
+    assert source.count('"connection": payload.get("connection")') == 2
+    # login_begin 的 llm_result_fields 要让 Agent 看到这组参数。
+    assert '"authorization_pending", "connection"' in source
+
+
 def test_read_only_quick_list_is_consistent() -> None:
     quick = _module_dict("_READ_ONLY_QUICK")
     assert quick
