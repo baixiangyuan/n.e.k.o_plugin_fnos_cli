@@ -424,6 +424,8 @@ class FnOsCliPlugin(NekoPluginBase):
                 "port": effective_port,
                 "scheme": effective_scheme,
                 "profile": effective_profile,
+                "allow_insecure_http": allow_insecure_http,
+                "tls_insecure": tls_insecure,
             },
         }
         if bool(self._setting("return_raw_output", False)):

@@ -484,6 +484,40 @@ def test_all_translations_are_normalized_to_str() -> None:
             )
 
 
+def test_insecure_http_flags_are_wired_through() -> None:
+    """allow_insecure_http / tls_insecure 必须从配置一路传到 CLI 参数。
+
+    Skill entries/trim-shared.md：`--scheme auto` 且未显式指定端口时，远端 IP
+    用 https:5667，远端域名用 https:443。而局域网 fnOS 通常是 http:5666。
+    不显式给 scheme 和 --allow-insecure-http，生成的授权链接浏览器打不开
+    （表现为"此站点的连接不安全"/"发送了无效的响应"）。
+    """
+    source = ENTRY_MODULE.read_text(encoding="utf-8")
+    # 插件侧读取配置并透传。
+    assert 'self._setting("allow_insecure_http", False)' in source
+    assert 'self._setting("tls_insecure", False)' in source
+    assert "allow_insecure_http=allow_insecure_http" in source
+    assert "tls_insecure=tls_insecure" in source
+    # connection 回显里带上，面板才能提示用户。
+    assert '"allow_insecure_http": allow_insecure_http' in source
+    assert '"tls_insecure": tls_insecure' in source
+
+    cli = (PLUGIN_DIR / "_cli.py").read_text(encoding="utf-8")
+    assert "--allow-insecure-http" in cli
+    assert "--tls-insecure" in cli
+
+    manifest = _load_manifest()["fnos_cli"]
+    assert "allow_insecure_http" in manifest, "plugin.toml 缺少 allow_insecure_http"
+    assert "tls_insecure" in manifest, "plugin.toml 缺少 tls_insecure"
+
+    panel = (PLUGIN_DIR / "ui" / "panel.tsx").read_text(encoding="utf-8")
+    assert "allow_insecure_http" in panel, "面板缺少明文 HTTP 开关"
+    assert "tls_insecure" in panel, "面板缺少 TLS 开关"
+    # 面板要把后端回显的开关显示出来，并给出打不开链接时的排查提示。
+    assert "conn.allow_insecure_http" in panel
+    assert "panel.login.connectionWarn" in panel
+
+
 def test_launcher_scripts_are_not_modified() -> None:
     """启动器与清单必须与 Skill 包一致：启动器内部有硬编码 SHA-256 校验。"""
     source_dir = PLUGIN_DIR.parent / "fnos" / "scripts"

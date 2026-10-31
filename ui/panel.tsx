@@ -32,6 +32,9 @@ type FnosConfig = {
   require_confirmation?: boolean
   timeout_seconds?: number
   working_dir?: string
+  return_raw_output?: boolean
+  allow_insecure_http?: boolean
+  tls_insecure?: boolean
 }
 
 type PlatformInfo = {
@@ -62,6 +65,8 @@ type PendingLogin = {
   port: number
   scheme: string
   profile: string
+  allowInsecureHttp?: boolean
+  tlsInsecure?: boolean
 }
 
 type LogRow = {
@@ -78,6 +83,8 @@ const defaultConfigForm = {
   require_confirmation: true,
   timeout_seconds: "300",
   working_dir: "",
+  allow_insecure_http: false,
+  tls_insecure: false,
 }
 
 const emptyCommandForm = {
@@ -198,6 +205,8 @@ export default function FnosPanel(props: PluginSurfaceProps<DashboardState>) {
       require_confirmation: config.require_confirmation !== false,
       timeout_seconds: String(config.timeout_seconds ?? 300),
       working_dir: String(config.working_dir || ""),
+      allow_insecure_http: config.allow_insecure_http === true,
+      tls_insecure: config.tls_insecure === true,
     })
     loginForm.setValues({
       host: String(config.host || ""),
@@ -233,6 +242,8 @@ export default function FnosPanel(props: PluginSurfaceProps<DashboardState>) {
         require_confirmation: !!configForm.values.require_confirmation,
         timeout_seconds: timeoutSeconds,
         working_dir: configForm.values.working_dir.trim(),
+        allow_insecure_http: !!configForm.values.allow_insecure_http,
+        tls_insecure: !!configForm.values.tls_insecure,
       })
       await props.api.refresh()
       toast.success(t("panel.messages.configSaved"))
@@ -302,7 +313,18 @@ export default function FnosPanel(props: PluginSurfaceProps<DashboardState>) {
       }
       // 链接必须显示在面板上：弹窗可能被浏览器拦截，用户也可能想把链接
       // 复制到手机或另一台设备打开。只 window.open 的话链接就看不见了。
-      setPendingLogin({ url, host, port, scheme, profile })
+      // 连接参数用后端回显的生效值，而不是表单原值 —— 空表单会走插件默认，
+      // 且 allow_insecure_http / tls_insecure 只有后端知道。
+      const conn = (result.connection || {}) as Record<string, any>
+      setPendingLogin({
+        url,
+        host: String(conn.host ?? host),
+        port: Number(conn.port ?? port),
+        scheme: String(conn.scheme ?? scheme),
+        profile: String(conn.profile ?? profile),
+        allowInsecureHttp: conn.allow_insecure_http === true,
+        tlsInsecure: conn.tls_insecure === true,
+      })
       toast.success(t("panel.messages.linkGenerated"))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
@@ -453,6 +475,17 @@ export default function FnosPanel(props: PluginSurfaceProps<DashboardState>) {
                   {/* 链接原文可见、可选中复制；window.open 可能被浏览器拦截，
                       用户也可能要在手机或另一台设备上打开。 */}
                   <Text>{pendingLogin.url}</Text>
+                  {/* 浏览器打不开链接时，先看这里：scheme=auto 会把远端 IP
+                      推断成 https，而局域网 fnOS 多是 http。 */}
+                  <Alert
+                    tone={pendingLogin.allowInsecureHttp || pendingLogin.tlsInsecure ? "success" : "warning"}
+                    message={
+                      pendingLogin.allowInsecureHttp || pendingLogin.tlsInsecure
+                        ? t("panel.login.connectionOk")
+                        : t("panel.login.connectionWarn")
+                    }
+                  />
+                  <Text>{`${pendingLogin.host}:${pendingLogin.port} · ${pendingLogin.scheme} · ${pendingLogin.profile}`}</Text>
                   <Inline gap={8} wrap>
                     <Button
                       tone="primary"
@@ -560,6 +593,19 @@ export default function FnosPanel(props: PluginSurfaceProps<DashboardState>) {
               label={t("panel.fields.requireConfirmation")}
               onChange={(value) => configForm.setField("require_confirmation", value)}
             />
+            {/* Switch 没有 help prop，说明文字用 Tip 补。 */}
+            <Switch
+              checked={configForm.values.allow_insecure_http}
+              label={t("panel.fields.allowInsecureHttp")}
+              onChange={(value) => configForm.setField("allow_insecure_http", value)}
+            />
+            <Tip>{t("panel.fields.allowInsecureHttpHelp")}</Tip>
+            <Switch
+              checked={configForm.values.tls_insecure}
+              label={t("panel.fields.tlsInsecure")}
+              onChange={(value) => configForm.setField("tls_insecure", value)}
+            />
+            <Tip>{t("panel.fields.tlsInsecureHelp")}</Tip>
             <Button tone="success" disabled={!updateConfigAction} onClick={saveConfig}>
               {t("panel.actions.saveConfig")}
             </Button>

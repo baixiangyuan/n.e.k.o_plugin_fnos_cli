@@ -15,3 +15,8 @@ timeout_seconds = 300
 working_dir = ""
 # 是否把 CLI 原始 stdout/stderr 一并返回给调用方。
 return_raw_output = false
+# 局域网设备走明文 HTTP 时打开：scheme=auto 会把远端 IP 推断成 https:5667，
+# 而 fnOS 在局域网 IP 上通常是 http:5666。不开这个，授权链接浏览器打不开。
+allow_insecure_http = true
+# 设备用自签 HTTPS 证书时打开。
+tls_insecure = false

@@ -63,3 +63,9 @@ timeout_seconds = 300
 working_dir = ""
 # 是否允许把命令输出原样返回给调用方（LLM/Agent 会看到设备返回内容）。
 return_raw_output = false
+# 远端明文 HTTP 需要显式开启（Skill entries/trim-shared.md：--allow-insecure-http）。
+# 局域网 fnOS 通常是 http:5666，而 scheme=auto 会把远端 IP 推断成 https:5667，
+# 不开启这个开关的话生成的授权链接在浏览器里打不开。
+allow_insecure_http = false
+# 自签 HTTPS 证书需要显式开启（--tls-insecure）。
+tls_insecure = false
