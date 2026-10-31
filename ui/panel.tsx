@@ -3,6 +3,7 @@ import {
   Card,
   Grid,
   Stack,
+  Inline,
   Text,
   Tip,
   Alert,
@@ -17,6 +18,7 @@ import {
   RefreshButton,
   useForm,
   useEffect,
+  useState,
   useToast,
   useConfirm,
 } from "@neko/plugin-ui"
@@ -54,6 +56,14 @@ type DashboardState = {
   quick_commands?: QuickCommand[]
 }
 
+type PendingLogin = {
+  url: string
+  host: string
+  port: number
+  scheme: string
+  profile: string
+}
+
 type LogRow = {
   key: string
   level?: string
@@ -81,6 +91,10 @@ const emptyLoginForm = {
   profile: "home",
 }
 
+const emptyCodeForm = {
+  code: "",
+}
+
 const READ_ONLY_PRESETS = [
   { group: "system", sub: "info", label: "系统信息" },
   { group: "storage", sub: "overview", label: "存储概览" },
@@ -96,6 +110,7 @@ const READ_ONLY_PRESETS = [
 type ConfigFormValues = typeof defaultConfigForm
 type CommandFormValues = typeof emptyCommandForm
 type LoginFormValues = typeof emptyLoginForm
+type CodeFormValues = typeof emptyCodeForm
 
 function actionById(actions: HostedAction[], id: string): HostedAction | undefined {
   return actions.find((action) => action.id === id || action.entry_id === id)
@@ -141,6 +156,8 @@ export default function FnosPanel(props: PluginSurfaceProps<DashboardState>) {
   const configForm = useForm<ConfigFormValues>(defaultConfigForm)
   const commandForm = useForm<CommandFormValues>(emptyCommandForm)
   const loginForm = useForm<LoginFormValues>(emptyLoginForm)
+  const codeForm = useForm<CodeFormValues>(emptyCodeForm)
+  const [pendingLogin, setPendingLogin] = useState<PendingLogin | null>(null)
 
   const updateConfigAction = actionById(actions || [], "update_config")
   const runAction = actionById(actions || [], "run")
@@ -270,21 +287,23 @@ export default function FnosPanel(props: PluginSurfaceProps<DashboardState>) {
       toast.error(t("panel.errors.actionUnavailable"))
       return
     }
+    const host = loginForm.values.host.trim()
+    const port = Number(loginForm.values.port) || 5666
+    const scheme = loginForm.values.scheme
+    const profile = loginForm.values.profile.trim() || "home"
     try {
       const result = unwrapActionResult(
-        await props.api.call("login_begin", {
-          host: loginForm.values.host.trim(),
-          port: Number(loginForm.values.port) || 5666,
-          scheme: loginForm.values.scheme,
-          profile: loginForm.values.profile.trim() || "home",
-        }),
+        await props.api.call("login_begin", { host, port, scheme, profile }),
       )
+      requireReady(result)
       const url = String(result.authorization_url || "")
       if (!url) {
         throw new Error(String(result.summary || t("panel.errors.loginFailed")))
       }
+      // 链接必须显示在面板上：弹窗可能被浏览器拦截，用户也可能想把链接
+      // 复制到手机或另一台设备打开。只 window.open 的话链接就看不见了。
+      setPendingLogin({ url, host, port, scheme, profile })
       toast.success(t("panel.messages.linkGenerated"))
-      window.open(url, "_blank", "noopener,noreferrer")
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
     }
@@ -295,19 +314,33 @@ export default function FnosPanel(props: PluginSurfaceProps<DashboardState>) {
       toast.error(t("panel.errors.actionUnavailable"))
       return
     }
-    const code = window.prompt(t("panel.prompts.code")) || ""
-    if (!code.trim()) return
+    const code = codeForm.values.code.trim()
+    if (!code) {
+      toast.error(t("panel.errors.codeRequired"))
+      return
+    }
+    // 沿用 login_begin 那次生效的连接参数：Skill 要求两次调用保持一致，
+    // 否则 pending verifier 对不上、code 兑换失败。用户中途改了表单也没用。
+    const conn = pendingLogin || {
+      host: loginForm.values.host.trim(),
+      port: Number(loginForm.values.port) || 5666,
+      scheme: loginForm.values.scheme,
+      profile: loginForm.values.profile.trim() || "home",
+    }
     try {
       const result = unwrapActionResult(
         await props.api.call("login_finish", {
-          code: code.trim(),
-          host: loginForm.values.host.trim(),
-          port: Number(loginForm.values.port) || 5666,
-          scheme: loginForm.values.scheme,
-          profile: loginForm.values.profile.trim() || "home",
+          code,
+          host: conn.host,
+          port: conn.port,
+          scheme: conn.scheme,
+          profile: conn.profile,
         }),
       )
+      requireReady(result)
       toast.success(String(result.summary || t("panel.messages.loginDone")))
+      codeForm.setValues({ code: "" })
+      setPendingLogin(null)
       await props.api.refresh()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
@@ -412,13 +445,64 @@ export default function FnosPanel(props: PluginSurfaceProps<DashboardState>) {
               >
                 {t("panel.actions.beginLogin")}
               </Button>
-              <Button
-                tone="success"
-                disabled={!loginFinishAction}
-                onClick={finishLogin}
-              >
-                {t("panel.actions.finishLogin")}
-              </Button>
+            </Stack>
+            {pendingLogin ? (
+              <Card title={t("panel.login.pendingTitle")}>
+                <Stack>
+                  <Alert tone="info" message={t("panel.login.pendingHint")} />
+                  {/* 链接原文可见、可选中复制；window.open 可能被浏览器拦截，
+                      用户也可能要在手机或另一台设备上打开。 */}
+                  <Text>{pendingLogin.url}</Text>
+                  <Inline gap={8} wrap>
+                    <Button
+                      tone="primary"
+                      onClick={() =>
+                        window.open(pendingLogin.url, "_blank", "noopener,noreferrer")
+                      }
+                    >
+                      {t("panel.login.openLink")}
+                    </Button>
+                    <Button
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(pendingLogin.url)
+                          toast.success(t("panel.messages.linkCopied"))
+                        } catch {
+                          toast.error(t("panel.errors.copyFailed"))
+                        }
+                      }}
+                    >
+                      {t("panel.login.copyLink")}
+                    </Button>
+                  </Inline>
+                  <Field label={t("panel.fields.code")} help={t("panel.login.codeHelp")}>
+                    <Input
+                      value={codeForm.values.code}
+                      placeholder={t("panel.login.codePlaceholder")}
+                      onChange={(value) => codeForm.setField("code", value)}
+                    />
+                  </Field>
+                  <Inline gap={8} wrap>
+                    <Button
+                      tone="success"
+                      disabled={!loginFinishAction}
+                      onClick={finishLogin}
+                    >
+                      {t("panel.actions.finishLogin")}
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        setPendingLogin(null)
+                        codeForm.setValues({ code: "" })
+                      }}
+                    >
+                      {t("panel.actions.cancel")}
+                    </Button>
+                  </Inline>
+                </Stack>
+              </Card>
+            ) : null}
+            <Stack>
               <Button tone="danger" disabled={!logoutAction} onClick={doLogout}>
                 {t("panel.actions.logout")}
               </Button>

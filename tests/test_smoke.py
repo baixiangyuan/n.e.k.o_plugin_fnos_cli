@@ -365,6 +365,79 @@ def test_read_only_quick_list_is_consistent() -> None:
 # ── 安全约束 ──────────────────────────────────────────────────────────────
 
 
+def test_panel_renders_the_authorization_link() -> None:
+    """授权链接必须渲染在面板里，不能只靠 window.open 弹窗。
+
+    回归点：beginLogin 原来只 window.open(url, "_blank")，链接本身不出现在
+    页面上。弹窗被浏览器拦截、或用户想把链接复制到手机/另一台设备打开时，
+    链接就彻底看不见，授权流程断死。
+    """
+    source = (PLUGIN_DIR / "ui" / "panel.tsx").read_text(encoding="utf-8")
+    # pendingLogin 状态承载待处理的授权会话。
+    assert "useState<PendingLogin" in source
+    assert "setPendingLogin({" in source
+    # 链接原文必须出现在 JSX 里（可选中、可复制）。
+    assert "{pendingLogin.url}" in source
+    # 弹窗降级为可点击动作，而不是唯一出口。
+    assert "window.open(pendingLogin.url" in source
+    # 复制按钮。
+    assert "navigator.clipboard.writeText(pendingLogin.url)" in source
+
+
+def test_panel_reuses_begin_connection_for_finish() -> None:
+    """finishLogin 必须沿用 beginLogin 那次生效的连接参数。
+
+    Skill reference/oauth.md：两段式授权两次调用必须使用相同
+    host/port/scheme/profile，否则 pending verifier 对不上、code 兑换失败。
+    用户在中途改动表单不应影响正在进行的授权。
+    """
+    source = (PLUGIN_DIR / "ui" / "panel.tsx").read_text(encoding="utf-8")
+    assert "const conn = pendingLogin || {" in source
+    # 调用必须走 conn，而不是重新读 loginForm。
+    assert "host: conn.host" in source
+    assert "port: conn.port" in source
+    assert "scheme: conn.scheme" in source
+    assert "profile: conn.profile" in source
+
+
+def test_panel_collects_code_via_input_not_prompt() -> None:
+    """code 用面板输入框收集，不用 window.prompt。
+
+    prompt 在部分宿主里会被拦截或样式错乱，且用户无法确认粘贴到了什么。
+    """
+    source = (PLUGIN_DIR / "ui" / "panel.tsx").read_text(encoding="utf-8")
+    assert "window.prompt" not in source
+    assert "codeForm" in source
+    assert "t(\"panel.fields.code\")" in source
+
+
+def test_panel_uses_only_sdk_supported_props() -> None:
+    """面板不得使用 @neko/plugin-ui 类型定义里不存在的 props。
+
+    回归点：曾给 Alert 传 title、给 Text 传 variant="code"/selectable、
+    给 Stack 传 direction="row"。SDK 里 Alert 只有 tone/message，
+    Text 只有 CommonProps，Stack 只有 gap；横向排布要用 Inline。
+    """
+    source = (PLUGIN_DIR / "ui" / "panel.tsx").read_text(encoding="utf-8")
+    for forbidden in (
+        "<Alert",  # 单独断言，下面逐项检查
+    ):
+        assert forbidden in source  # Alert 仍在使用，但只准带 tone/message
+
+    # Alert 只允许 tone 与 message。
+    for match in re.finditer(r"<Alert\b([^>]*)>", source):
+        props = match.group(1)
+        for prop in re.findall(r"(\w+)=", props):
+            assert prop in {"tone", "message"}, f"Alert 使用了不存在的 prop: {prop}"
+
+    assert 'variant="code"' not in source
+    assert "selectable" not in source
+    assert 'direction="row"' not in source
+    # 横向排布统一走 Inline。
+    if "Inline" in source:
+        assert re.search(r"<Inline\b[^>]*\bgap=", source), "Inline 需要显式 gap"
+
+
 def test_launcher_scripts_are_not_modified() -> None:
     """启动器与清单必须与 Skill 包一致：启动器内部有硬编码 SHA-256 校验。"""
     source_dir = PLUGIN_DIR.parent / "fnos" / "scripts"
