@@ -8,7 +8,7 @@ keywords = [
     "docker", "download", "下载", "app", "应用中心", "log", "日志", "monitor", "监控",
     "network", "网络", "ssh", "user", "用户", "百度网盘", "baidu", "netdisk", "photo", "相册",
 ]
-version = "0.5.3"
+version = "0.5.4"
 type = "plugin"
 entry = "plugin.plugins.fnos_cli.plugin:FnOsCliPlugin"
 

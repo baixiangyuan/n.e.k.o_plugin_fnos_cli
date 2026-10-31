@@ -94,6 +94,21 @@ def test_plugin_toml_is_valid() -> None:
     assert re.fullmatch(r"[A-Za-z0-9_.\-]+:[A-Za-z_][A-Za-z0-9_]*", plugin["entry"])
 
 
+def test_version_is_consistent_across_manifest_and_pyproject() -> None:
+    """plugin.toml 与 pyproject.toml 的版本必须一致。
+
+    市场的 tag 触发流程要求 `v<version>` tag 匹配 `[plugin].version`；两处不一致
+    时，"Mount plugin into N.E.K.O tree" 步骤会直接失败，且失败点离原因很远。
+    """
+    import tomllib as _tomllib
+
+    manifest_version = _load_manifest()["plugin"]["version"]
+    pyproject = _tomllib.loads((PLUGIN_DIR / "pyproject.toml").read_text(encoding="utf-8"))
+    assert pyproject["project"]["version"] == manifest_version, (
+        f"pyproject.toml {pyproject['project']['version']} != plugin.toml {manifest_version}"
+    )
+
+
 def test_manifest_declares_surfaces_and_files_exist() -> None:
     manifest = _load_manifest()
     ui = manifest["plugin"]["ui"]
