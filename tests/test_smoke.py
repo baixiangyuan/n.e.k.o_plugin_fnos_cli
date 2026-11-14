@@ -634,6 +634,19 @@ def test_panel_asks_for_confirmation_before_write_operations() -> None:
     assert 'callConfirmed(props, "logout"' in panel
 
 
+def test_release_workflow_grants_attestation_permissions() -> None:
+    """release.yml 必须给调用方授权 id-token / attestations。
+
+    上游 plugin-market-release.yml 自 2026-11-09 起有 attest job，需要
+    contents/id-token/attestations 三种写权限。被调用工作流的权限不能超过
+    调用方，缺任意一项都会让 tag 触发的 run 直接 startup_failure —— 连 job
+    都不创建，日志里只有一句 "workflow file issue"，很难定位。
+    """
+    workflow = (PLUGIN_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    for scope in ("contents: write", "id-token: write", "attestations: write"):
+        assert scope in workflow, f"release.yml 缺少 {scope}"
+
+
 def test_launcher_scripts_are_not_modified() -> None:
     """启动器与清单必须与 Skill 包一致：启动器内部有硬编码 SHA-256 校验。"""
     source_dir = PLUGIN_DIR.parent / "fnos" / "scripts"

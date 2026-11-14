@@ -9,7 +9,12 @@ on:
   workflow_dispatch:
 
 permissions:
+  # 上游 plugin-market-release.yml 自 2026-11-09 起增加 attest job：
+  # 被调用工作流的权限不能超过调用方，缺这两项会让整个 run 直接
+  # startup_failure（连 job 都不会创建）。
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
