@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import platform
 import shutil
@@ -26,8 +27,25 @@ _LAUNCHER_RELATIVE = Path("scripts") / "fnos-cli"
 _LAUNCHER_WINDOWS_RELATIVE = Path("scripts") / "fnos-cli.cmd"
 _LAUNCHER_POWERSHELL_RELATIVE = Path("scripts") / "fnos-cli.ps1"
 
-# CLI 版本（与 runtime-manifest.json 固定绑定）。
-CLI_VERSION = "0.5.1"
+# 启动器校验用的清单，同时是 CLI 版本的唯一来源。
+_RUNTIME_MANIFEST = Path(__file__).resolve().parent / "runtime-manifest.json"
+
+
+def _pinned_cli_version() -> str:
+    """从 runtime-manifest.json 读取固定 CLI 版本。
+
+    回归点：版本号曾在这里硬编码，需要人工和清单保持一致，漂移了也没有
+    任何地方能发现。清单本来就是启动器校验的唯一真相，版本也从它读。
+    """
+    try:
+        data = json.loads(_RUNTIME_MANIFEST.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "unknown"
+    version = data.get("version")
+    return str(version) if version else "unknown"
+
+
+CLI_VERSION = _pinned_cli_version()
 
 
 class CliUnavailableError(RuntimeError):
@@ -85,12 +103,6 @@ def resolve_launcher(plugin_dir: Path) -> Path:
         candidate = plugin_dir / _LAUNCHER_RELATIVE
         if candidate.is_file():
             return candidate
-        # 极少数情况（例如被拷贝到无执行位的位置）下退回 sh 显式调用。
-        candidate = plugin_dir / _LAUNCHER_RELATIVE
-        if candidate.is_file():
-            sh = shutil.which("sh")
-            if sh:
-                return candidate
     raise CliUnavailableError(
         f"fnos-cli launcher not found under {plugin_dir / 'scripts'}"
     )
@@ -121,6 +133,13 @@ def build_invocation(launcher: Path) -> tuple[List[str], Optional[str]]:
             powershell, "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", str(launcher),
         ], None
+    # 非 Windows：启动器缺少执行位时退回 sh 显式调用。
+    # 回归点：resolve_launcher 里曾有一段永远走不到的死代码想处理这种情况，
+    # 但真正决定 argv 的是这里，所以那段判断从来没生效过。
+    if not os.access(launcher, os.X_OK):
+        sh = shutil.which("sh")
+        if sh:
+            return [sh, str(launcher)], None
     return [str(launcher)], None
 
 

@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "fnos_cli": {
+      "type": "object",
+      "title": "fnOS 连接设置",
+      "x-title-i18n": {
+        "zh-CN": "fnOS 连接设置",
+        "en": "fnOS connection settings"
+      },
+      "properties": {
+        "host": {
+          "type": "string",
+          "title": "主机地址",
+          "x-title-i18n": {
+            "zh-CN": "主机地址",
+            "en": "Host"
+          },
+          "description": "fnOS 设备的 IP 或域名。留空表示未设置，需要在调用时显式指定。",
+          "x-description-i18n": {
+            "zh-CN": "fnOS 设备的 IP 或域名。留空表示未设置，需要在调用时显式指定。",
+            "en": "IP address or hostname of the fnOS device. Empty means unset; specify it per call."
+          },
+          "maxLength": 253,
+          "default": ""
+        },
+        "port": {
+          "type": "integer",
+          "title": "端口",
+          "x-title-i18n": {
+            "zh-CN": "端口",
+            "en": "Port"
+          },
+          "description": "设备 Web 端口。局域网常见 5666。",
+          "x-description-i18n": {
+            "zh-CN": "设备 Web 端口。局域网常见 5666。",
+            "en": "Device web port. 5666 is common on a LAN."
+          },
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 5666
+        },
+        "scheme": {
+          "type": "string",
+          "title": "连接协议",
+          "x-title-i18n": {
+            "zh-CN": "连接协议",
+            "en": "Scheme"
+          },
+          "description": "auto 会按目标推断：远端 IP 推断为 https:5667，局域网明文设备请改为 http 并开启「允许明文 HTTP」。",
+          "x-description-i18n": {
+            "zh-CN": "auto 会按目标推断：远端 IP 推断为 https:5667，局域网明文设备请改为 http 并开启「允许明文 HTTP」。",
+            "en": "auto infers from the target: remote IPs become https:5667. For plain-HTTP LAN devices choose http and enable Allow plain HTTP."
+          },
+          "enum": ["auto", "http", "https"],
+          "default": "auto"
+        },
+        "profile": {
+          "type": "string",
+          "title": "Profile",
+          "x-title-i18n": {
+            "zh-CN": "Profile",
+            "en": "Profile"
+          },
+          "description": "登录状态隔离用的配置名，仅允许 ASCII 字母、数字、下划线、连字符和点。",
+          "x-description-i18n": {
+            "zh-CN": "登录状态隔离用的配置名，仅允许 ASCII 字母、数字、下划线、连字符和点。",
+            "en": "Name used to isolate login state. ASCII letters, digits, underscore, hyphen and dot only."
+          },
+          "pattern": "^[A-Za-z0-9_.-]*$",
+          "maxLength": 64,
+          "default": "home"
+        },
+        "require_confirmation": {
+          "type": "boolean",
+          "title": "高危写操作需要确认",
+          "x-title-i18n": {
+            "zh-CN": "高危写操作需要确认",
+            "en": "Require confirmation for write operations"
+          },
+          "description": "开启时，删除文件、关机、格式化等写操作必须带 confirmed=true 才执行。",
+          "x-description-i18n": {
+            "zh-CN": "开启时，删除文件、关机、格式化等写操作必须带 confirmed=true 才执行。",
+            "en": "When on, write operations such as deleting files, powering off or formatting require confirmed=true."
+          },
+          "default": true
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "title": "单条命令超时（秒）",
+          "x-title-i18n": {
+            "zh-CN": "单条命令超时（秒）",
+            "en": "Command timeout (seconds)"
+          },
+          "description": "拉镜像、导出日志等操作本身较慢，范围 5-3600。",
+          "x-description-i18n": {
+            "zh-CN": "拉镜像、导出日志等操作本身较慢，范围 5-3600。",
+            "en": "Pulling images or exporting logs is slow; allowed range is 5-3600."
+          },
+          "minimum": 5,
+          "maximum": 3600,
+          "default": 300
+        },
+        "working_dir": {
+          "type": "string",
+          "title": "工作目录",
+          "x-title-i18n": {
+            "zh-CN": "工作目录",
+            "en": "Working directory"
+          },
+          "description": "CLI 执行命令时的工作目录。留空则使用插件目录。",
+          "x-description-i18n": {
+            "zh-CN": "CLI 执行命令时的工作目录。留空则使用插件目录。",
+            "en": "Working directory for CLI commands. Empty uses the plugin directory."
+          },
+          "maxLength": 1024,
+          "default": ""
+        },
+        "return_raw_output": {
+          "type": "boolean",
+          "title": "返回原始输出",
+          "x-title-i18n": {
+            "zh-CN": "返回原始输出",
+            "en": "Return raw output"
+          },
+          "description": "开启后把 CLI 的完整 stdout/stderr 一并返回给调用方。默认只返回尾部摘要。",
+          "x-description-i18n": {
+            "zh-CN": "开启后把 CLI 的完整 stdout/stderr 一并返回给调用方。默认只返回尾部摘要。",
+            "en": "Return the full CLI stdout/stderr to the caller. By default only a tail summary is returned."
+          },
+          "default": false
+        },
+        "allow_insecure_http": {
+          "type": "boolean",
+          "title": "允许明文 HTTP（局域网设备）",
+          "x-title-i18n": {
+            "zh-CN": "允许明文 HTTP（局域网设备）",
+            "en": "Allow plain HTTP (LAN devices)"
+          },
+          "description": "scheme=auto 会把远端 IP 推断成 https:5667，而局域网 fnOS 通常是 http:5666。开启后才会带 --allow-insecure-http，授权链接才能在浏览器打开。",
+          "x-description-i18n": {
+            "zh-CN": "scheme=auto 会把远端 IP 推断成 https:5667，而局域网 fnOS 通常是 http:5666。开启后才会带 --allow-insecure-http，授权链接才能在浏览器打开。",
+            "en": "scheme=auto infers https:5667 for remote IPs, but LAN fnOS is usually http:5666. Enable this to pass --allow-insecure-http so authorization links open in a browser."
+          },
+          "default": false
+        },
+        "tls_insecure": {
+          "type": "boolean",
+          "title": "跳过 HTTPS 证书校验",
+          "x-title-i18n": {
+            "zh-CN": "跳过 HTTPS 证书校验",
+            "en": "Skip HTTPS certificate verification"
+          },
+          "description": "设备使用自签证书时开启，对应 CLI 的 --tls-insecure。",
+          "x-description-i18n": {
+            "zh-CN": "设备使用自签证书时开启，对应 CLI 的 --tls-insecure。",
+            "en": "Enable when the device uses a self-signed certificate; maps to --tls-insecure."
+          },
+          "default": false
+        }
+      }
+    }
+  }
+}

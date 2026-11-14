@@ -85,8 +85,11 @@ login_finish → 同一主机/用户/profile/连接参数下交换 token
 }
 ```
 
-Agent 应先向用户复述目标与影响，再带 `confirmed=true` 重调；面板则弹出确认框。
+Agent 应先向用户复述目标与影响，再带 `confirmed=true` 重调。面板走同样的流程：先不带 `confirmed` 调用，收到 `status=clarify` 后弹确认框，用户确认才带 `confirmed=true` 重试。
+
 可以在配置里关闭 `require_confirmation`，但不建议——那会让所有写操作静默执行。
+
+命令必须以子命令开头。以全局 flag（`--yes`、`--profile` 等）开头的命令会被拒绝，因为这些 flag 由插件按入口参数注入，允许用户自带会让组名识别不到，从而同时绕过阻断清单和写操作确认。
 
 ## 已知边界
 

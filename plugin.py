@@ -58,7 +58,6 @@ _WRITE_SUBCOMMANDS = {
     "download": {"add-uri", "add-path", "pause", "resume", "retry", "rm"},
     "app": {"install", "install-fpk", "update", "start", "stop", "uninstall",
             "openapi", "config"},
-    "network": {"ssh"},
     "logger": {"clear", "export", "archive"},
     "diagnostic-log": {"export", "stop"},
     "monitor": {"mute-beeper", "request"},
@@ -69,6 +68,13 @@ _WRITE_SUBCOMMANDS = {
              "group", "request"},
     "login": {"logout"},
     "system": {"request"},
+}
+
+# 两段旗标区分的命令：只看第二段会把查询也判成写操作。
+# `network ssh` 是查询，只有 `network ssh switch --enable/--disable` 才改状态
+# （Skill reference/network.md）。
+_WRITE_SUBCOMMAND_PATHS = {
+    ("network", "ssh", "switch"),
 }
 
 # 完全不开放给插件的命令（Skill 明确不适用或需要交互 TTY）。
@@ -87,7 +93,9 @@ _READ_ONLY_QUICK = (
     ("storage", ["overview", "pools", "disks", "free-disks", "space", "removable"]),
     ("monitor", ["cpu", "memory", "net", "disk", "proc-list", "proc-srv",
                  "sys-warn", "battery", "sys-fan", "beep-supported"]),
-    ("docker", ["stats", "image", "container", "compose"]),
+    # image/container/compose 下面既有查询也有写操作（pull/rm/up…），
+    # 不能整体算只读，只保留确定只读的 stats。
+    ("docker", ["stats"]),
     ("download", ["ls", "stat"]),
     ("app", ["list", "status", "entry", "desktop", "sac"]),
     ("file", ["ls", "search", "search-others", "usage", "is-mount-point",
@@ -154,33 +162,43 @@ class FnOsCliPlugin(NekoPluginBase):
 
         host: str = SettingsField(
             "", hot=True,
-            description="默认 fnOS 主机地址；留空需在调用时显式指定 / 默认为空需显式指定",
+            description="默认 fnOS 主机地址；留空表示未设置，需在调用时显式指定",
         )
         port: int = SettingsField(
             5666, hot=True, ge=1, le=65535,
-            description="默认端口；回环默认 5666 / 回环默认 5666",
+            description="默认端口。回环通常是 5666",
         )
         scheme: str = SettingsField(
             "auto", hot=True,
-            description="连接协议：auto/http/https / 连接协议：auto/http/https",
+            description="连接协议：auto 会按目标推断，远端 IP 推断为 https:5667",
         )
         profile: str = SettingsField(
             "home", hot=True,
-            description="CLI profile 名（登录状态隔离）/ CLI profile 名（登录状态隔离）",
+            description="CLI profile 名，用于隔离登录状态。仅允许 ASCII 字母、数字、_ - .",
         )
         require_confirmation: bool = SettingsField(
-            True, description="高危写操作是否需要显式确认 / 高危写操作是否需显式确认",
+            True, hot=True,
+            description="高危写操作是否需要显式确认",
         )
         timeout_seconds: int = SettingsField(
-            300, ge=5, le=3600,
-            description="单条 CLI 命令最长执行秒数 / 单条 CLI 命令最长执行秒数",
+            300, hot=True, ge=5, le=3600,
+            description="单条 CLI 命令最长执行秒数",
         )
         return_raw_output: bool = SettingsField(
-            False,
-            description="是否把 CLI 原始 stdout/stderr 一并返回 / 是否返回 CLI 原始输出",
+            False, hot=True,
+            description="是否把 CLI 原始 stdout/stderr 一并返回给调用方",
         )
         working_dir: str = SettingsField(
-            "", description="CLI 工作目录；留空使用插件运行目录 / CLI 工作目录；留空用插件运行目录",
+            "", hot=True,
+            description="CLI 工作目录；留空则使用插件目录",
+        )
+        allow_insecure_http: bool = SettingsField(
+            False, hot=True,
+            description="允许明文 HTTP。局域网 fnOS 通常是 http:5666，而 auto 会把远端 IP 推断成 https:5667，需要开启本项",
+        )
+        tls_insecure: bool = SettingsField(
+            False, hot=True,
+            description="跳过 HTTPS 证书校验，用于自签证书设备",
         )
 
     def __init__(self, ctx: Any):
@@ -276,7 +294,7 @@ class FnOsCliPlugin(NekoPluginBase):
 
     def _requires_confirmation(self, tokens: List[str]) -> bool:
         """判断一条命令是否属于高危写操作。"""
-        if not tokens:
+        if not tokens or tokens[0].startswith("-"):
             return False
         group = tokens[0]
         # 两段式授权放行的两种 login 形状本来就走 confirmed=True，
@@ -288,6 +306,10 @@ class FnOsCliPlugin(NekoPluginBase):
             blocked = _BLOCKED_SUBCOMMANDS[group]
             if "*" in blocked:
                 return True
+        # 先看三段路径：`network ssh` 是查询，`network ssh switch` 才是写。
+        for path in _WRITE_SUBCOMMAND_PATHS:
+            if tuple(tokens[:len(path)]) == path:
+                return True
         writes = _WRITE_SUBCOMMANDS.get(group)
         if not writes:
             return False
@@ -298,6 +320,14 @@ class FnOsCliPlugin(NekoPluginBase):
     def _check_blocked(self, tokens: List[str]) -> Optional[str]:
         if not tokens:
             return "命令为空"
+        # 命令必须以子命令开头。全局 flag（--profile/--yes 等）由插件按入口参数
+        # 统一注入；允许用户自带会让 tokens[0] 不再是组名，从而同时绕过
+        # media/login 的阻断和写操作确认。
+        if tokens[0].startswith("-"):
+            return (
+                "命令不能以全局 flag 开头；host/port/scheme/profile 请用入口参数传入，"
+                "写操作确认由 confirmed 控制"
+            )
         group = tokens[0]
         blocked = _BLOCKED_SUBCOMMANDS.get(group)
         if blocked:

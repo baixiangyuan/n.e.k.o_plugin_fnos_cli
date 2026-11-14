@@ -26,7 +26,7 @@
 - `run` 通用命令入口（阻断清单 + 写操作确认）
 - 只读快捷入口：`system_info`、`storage_overview`、`storage_pools`、`storage_disks`、
   `monitor_cpu`、`monitor_memory`、`download_list`、`docker_stats`
-- Hosted TSX 面板：启动器状态、连接参数、授权两步、配置保存、只读快捷按钮、命令执行、最近结果
+- Hosted TSX 面板：启动器状态、连接参数、授权两步、当前配置（只读）、只读快捷按钮、命令执行、最近结果
 - `docs/quickstart.md` Markdown 指南
 - zh-CN / en 两套 locale
 

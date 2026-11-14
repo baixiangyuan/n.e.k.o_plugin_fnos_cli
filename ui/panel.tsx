@@ -14,7 +14,6 @@ import {
   Field,
   Input,
   Select,
-  Switch,
   RefreshButton,
   useForm,
   useEffect,
@@ -22,7 +21,7 @@ import {
   useToast,
   useConfirm,
 } from "@neko/plugin-ui"
-import type { HostedAction, PluginSurfaceProps } from "@neko/plugin-ui"
+import type { HostedAction, PluginSurfaceProps, Tone } from "@neko/plugin-ui"
 
 type FnosConfig = {
   host?: string
@@ -75,18 +74,6 @@ type LogRow = {
   message?: string
 }
 
-const defaultConfigForm = {
-  host: "",
-  port: "5666",
-  scheme: "auto",
-  profile: "home",
-  require_confirmation: true,
-  timeout_seconds: "300",
-  working_dir: "",
-  allow_insecure_http: false,
-  tls_insecure: false,
-}
-
 const emptyCommandForm = {
   command: "system info",
 }
@@ -114,7 +101,6 @@ const READ_ONLY_PRESETS = [
   { group: "file", sub: "ls", label: "根目录文件" },
 ]
 
-type ConfigFormValues = typeof defaultConfigForm
 type CommandFormValues = typeof emptyCommandForm
 type LoginFormValues = typeof emptyLoginForm
 type CodeFormValues = typeof emptyCodeForm
@@ -136,6 +122,48 @@ function requireReady(result: Record<string, any>): Record<string, any> {
   throw new Error(String(result.summary || result.message || result.status || "Action failed"))
 }
 
+/**
+ * 先不带 confirmed 调用一次；后端判定是写操作时返回 clarify，此时向用户
+ * 弹真正的确认框，确认后再带 confirmed 重试。
+ *
+ * 回归点：这里原本第一次就带 confirmed: true，后端永远走不到 clarify 分支，
+ * 面板上输入 `power poweroff` 会直接关机，文档承诺的「面板会弹确认框」
+ * 形同虚设。
+ */
+async function callWithConfirm(
+  props: PluginSurfaceProps<DashboardState>,
+  confirm: (options: {
+    title?: any
+    message?: any
+    tone?: Tone
+    confirmLabel?: any
+    cancelLabel?: any
+  }) => Promise<boolean>,
+  t: (key: string) => string,
+  actionId: string,
+  payload: Record<string, any>,
+): Promise<Record<string, any>> {
+  const first = unwrapActionResult(await props.api.call(actionId, { ...payload }))
+  if (first.status === "clarify") {
+    const ok = await confirm({
+      title: t("panel.confirmWrite.title"),
+      message: String(first.summary || t("panel.confirmWrite.message")),
+      tone: "danger",
+      confirmLabel: t("panel.confirmWrite.confirm"),
+      cancelLabel: t("panel.actions.cancel"),
+    })
+    if (!ok) {
+      throw new Error(t("panel.messages.cancelled"))
+    }
+    const confirmed = unwrapActionResult(
+      await props.api.call(actionId, { ...(first.context || {}), confirmed: true }),
+    )
+    return requireReady(confirmed)
+  }
+  return requireReady(first)
+}
+
+/** 调用方已经自行确认过时使用：直接带 confirmed 重试。 */
 async function callConfirmed(
   props: PluginSurfaceProps<DashboardState>,
   actionId: string,
@@ -160,13 +188,11 @@ export default function FnosPanel(props: PluginSurfaceProps<DashboardState>) {
   const lastResult = safeState.last_result
   const toast = useToast()
   const confirm = useConfirm()
-  const configForm = useForm<ConfigFormValues>(defaultConfigForm)
   const commandForm = useForm<CommandFormValues>(emptyCommandForm)
   const loginForm = useForm<LoginFormValues>(emptyLoginForm)
   const codeForm = useForm<CodeFormValues>(emptyCodeForm)
   const [pendingLogin, setPendingLogin] = useState<PendingLogin | null>(null)
 
-  const updateConfigAction = actionById(actions || [], "update_config")
   const runAction = actionById(actions || [], "run")
   const loginBeginAction = actionById(actions || [], "login_begin")
   const loginFinishAction = actionById(actions || [], "login_finish")
@@ -197,17 +223,6 @@ export default function FnosPanel(props: PluginSurfaceProps<DashboardState>) {
   }))
 
   useEffect(() => {
-    configForm.setValues({
-      host: String(config.host || ""),
-      port: String(config.port ?? 5666),
-      scheme: String(config.scheme || "auto"),
-      profile: String(config.profile || "home"),
-      require_confirmation: config.require_confirmation !== false,
-      timeout_seconds: String(config.timeout_seconds ?? 300),
-      working_dir: String(config.working_dir || ""),
-      allow_insecure_http: config.allow_insecure_http === true,
-      tls_insecure: config.tls_insecure === true,
-    })
     loginForm.setValues({
       host: String(config.host || ""),
       port: String(config.port ?? 5666),
@@ -224,34 +239,6 @@ export default function FnosPanel(props: PluginSurfaceProps<DashboardState>) {
     config.working_dir,
   ])
 
-  async function saveConfig() {
-    if (!updateConfigAction) {
-      toast.error(t("panel.errors.actionUnavailable"))
-      return
-    }
-    try {
-      const timeoutSeconds = Number(configForm.values.timeout_seconds)
-      if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 5) {
-        throw new Error(t("panel.errors.timeoutRange"))
-      }
-      await callConfirmed(props, "update_config", {
-        host: configForm.values.host.trim(),
-        port: Number(configForm.values.port) || 5666,
-        scheme: configForm.values.scheme,
-        profile: configForm.values.profile.trim() || "home",
-        require_confirmation: !!configForm.values.require_confirmation,
-        timeout_seconds: timeoutSeconds,
-        working_dir: configForm.values.working_dir.trim(),
-        allow_insecure_http: !!configForm.values.allow_insecure_http,
-        tls_insecure: !!configForm.values.tls_insecure,
-      })
-      await props.api.refresh()
-      toast.success(t("panel.messages.configSaved"))
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
-    }
-  }
-
   async function runCommand() {
     if (!runAction) {
       toast.error(t("panel.errors.actionUnavailable"))
@@ -263,7 +250,7 @@ export default function FnosPanel(props: PluginSurfaceProps<DashboardState>) {
       return
     }
     try {
-      const result = await callConfirmed(props, "run", { command })
+      const result = await callWithConfirm(props, confirm, t, "run", { command })
       if (result.status === "error") {
         toast.error(String(result.summary || t("panel.errors.commandFailed")))
       } else {
@@ -282,7 +269,7 @@ export default function FnosPanel(props: PluginSurfaceProps<DashboardState>) {
     }
     try {
       if (entryId === "run") {
-        await callConfirmed(props, "run", { command: `${group} ${sub}` })
+        await callWithConfirm(props, confirm, t, "run", { command: `${group} ${sub}` })
       } else {
         await props.api.call(entryId, {})
       }
@@ -544,72 +531,37 @@ export default function FnosPanel(props: PluginSurfaceProps<DashboardState>) {
           </Stack>
         </Card>
 
+        {/* 配置只读展示。写配置没有可用的插件入口（update_config 并不存在），
+            真正的编辑入口是插件管理器的配置页，字段由 config.schema.json 渲染。 */}
         <Card title={t("panel.config.title")}>
           <Stack>
-            <Field label={t("panel.fields.host")}>
-              <Input
-                value={configForm.values.host}
-                placeholder="192.168.1.10"
-                onChange={(value) => configForm.setField("host", value)}
-              />
-            </Field>
-            <Field label={t("panel.fields.port")}>
-              <Input
-                value={configForm.values.port}
-                placeholder="5666"
-                onChange={(value) => configForm.setField("port", value)}
-              />
-            </Field>
-            <Field label={t("panel.fields.scheme")}>
-              <Select
-                value={configForm.values.scheme}
-                options={["auto", "http", "https"]}
-                onChange={(value) => configForm.setField("scheme", String(value))}
-              />
-            </Field>
-            <Field label={t("panel.fields.profile")}>
-              <Input
-                value={configForm.values.profile}
-                placeholder="home"
-                onChange={(value) => configForm.setField("profile", value)}
-              />
-            </Field>
-            <Field label={t("panel.fields.timeout")} help={t("panel.fields.timeoutHelp")}>
-              <Input
-                value={configForm.values.timeout_seconds}
-                placeholder="300"
-                onChange={(value) => configForm.setField("timeout_seconds", value)}
-              />
-            </Field>
-            <Field label={t("panel.fields.workingDir")} help={t("panel.fields.workingDirHelp")}>
-              <Input
-                value={configForm.values.working_dir}
-                placeholder={t("panel.placeholders.workingDir")}
-                onChange={(value) => configForm.setField("working_dir", value)}
-              />
-            </Field>
-            <Switch
-              checked={configForm.values.require_confirmation}
-              label={t("panel.fields.requireConfirmation")}
-              onChange={(value) => configForm.setField("require_confirmation", value)}
+            <DataTable
+              columns={[
+                { key: "key", label: t("panel.config.colKey") },
+                { key: "value", label: t("panel.config.colValue") },
+              ]}
+              data={[
+                { key: t("panel.fields.host"), value: String(config.host || "-") },
+                { key: t("panel.fields.port"), value: String(config.port ?? 5666) },
+                { key: t("panel.fields.scheme"), value: String(config.scheme || "auto") },
+                { key: t("panel.fields.profile"), value: String(config.profile || "home") },
+                { key: t("panel.fields.timeout"), value: String(config.timeout_seconds ?? 300) },
+                {
+                  key: t("panel.fields.requireConfirmation"),
+                  value: config.require_confirmation === false ? t("panel.values.off") : t("panel.values.on"),
+                },
+                {
+                  key: t("panel.fields.allowInsecureHttp"),
+                  value: config.allow_insecure_http === true ? t("panel.values.on") : t("panel.values.off"),
+                },
+                {
+                  key: t("panel.fields.tlsInsecure"),
+                  value: config.tls_insecure === true ? t("panel.values.on") : t("panel.values.off"),
+                },
+              ]}
+              rowKey="key"
             />
-            {/* Switch 没有 help prop，说明文字用 Tip 补。 */}
-            <Switch
-              checked={configForm.values.allow_insecure_http}
-              label={t("panel.fields.allowInsecureHttp")}
-              onChange={(value) => configForm.setField("allow_insecure_http", value)}
-            />
-            <Tip>{t("panel.fields.allowInsecureHttpHelp")}</Tip>
-            <Switch
-              checked={configForm.values.tls_insecure}
-              label={t("panel.fields.tlsInsecure")}
-              onChange={(value) => configForm.setField("tls_insecure", value)}
-            />
-            <Tip>{t("panel.fields.tlsInsecureHelp")}</Tip>
-            <Button tone="success" disabled={!updateConfigAction} onClick={saveConfig}>
-              {t("panel.actions.saveConfig")}
-            </Button>
-            <Tip>{t("panel.config.tip")}</Tip>
+            <Alert tone="info" message={t("panel.config.editHint")} />
           </Stack>
         </Card>
       </Grid>

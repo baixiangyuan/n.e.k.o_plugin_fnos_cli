@@ -261,9 +261,55 @@ def test_write_subcommands_cover_high_risk_commands() -> None:
         assert isinstance(subcommands, set) or isinstance(subcommands, (list, tuple, frozenset))
         assert subcommands, f"{group} declares no write subcommands"
     # Skill 文档中所有标注 --yes 的命令族都必须覆盖。
-    for group in {"file", "storage", "docker", "download", "app", "network",
+    # network 不在两段表里：`network ssh` 是查询，只有三段路径
+    # `network ssh switch` 才改状态，见 _WRITE_SUBCOMMAND_PATHS。
+    for group in {"file", "storage", "docker", "download", "app",
                   "logger", "monitor", "baidu-netdisk", "power", "user"}:
         assert group in writes, f"{group} missing from _WRITE_SUBCOMMANDS"
+
+
+def test_network_ssh_query_is_not_mistaken_for_a_write() -> None:
+    """`network ssh` 查询不能被判成写操作，只有 switch 才要确认。
+
+    Skill reference/network.md：`network ssh` 读取 SSH 状态，
+    `network ssh switch --enable/--disable` 才是写。按第二段分类会把两者
+    都要求确认，既烦又让只读快捷表自相矛盾。
+    """
+    source = ENTRY_MODULE.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    def module_set(name: str) -> set:
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == name:
+                        return ast.literal_eval(node.value)
+        raise AssertionError(f"{name} not found")
+
+    writes = module_set("_WRITE_SUBCOMMANDS")
+    assert "network" not in writes, "network 不应再按第二段整组判写"
+    paths = module_set("_WRITE_SUBCOMMAND_PATHS")
+    assert ("network", "ssh", "switch") in paths
+
+
+def test_commands_starting_with_a_global_flag_are_rejected() -> None:
+    """命令不得以全局 flag 开头，否则组名识别不到，门禁整体失效。
+
+    回归点：`_check_blocked` / `_requires_confirmation` 只看 tokens[0]。
+    用户写 `--yes file rm /data` 或 `--profile x media list` 时 tokens[0]
+    是 flag，既拿不到写操作确认，也绕过 media/login 的阻断。
+    """
+    source = ENTRY_MODULE.read_text(encoding="utf-8")
+    assert 'tokens[0].startswith("-")' in source
+    # 拦截发生在 _check_blocked（所有入口共用），不是只在 run 里。
+    tree = ast.parse(source)
+    check_blocked = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef) and node.name == "_check_blocked"
+    )
+    segment = ast.get_source_segment(source, check_blocked) or ""
+    assert 'tokens[0].startswith("-")' in segment
+    assert "命令不能以全局 flag 开头" in segment
 
 
 def test_blocked_subcommands_cover_media_and_login() -> None:
@@ -526,11 +572,66 @@ def test_insecure_http_flags_are_wired_through() -> None:
     assert "tls_insecure" in manifest, "plugin.toml 缺少 tls_insecure"
 
     panel = (PLUGIN_DIR / "ui" / "panel.tsx").read_text(encoding="utf-8")
-    assert "allow_insecure_http" in panel, "面板缺少明文 HTTP 开关"
-    assert "tls_insecure" in panel, "面板缺少 TLS 开关"
-    # 面板要把后端回显的开关显示出来，并给出打不开链接时的排查提示。
+    # 面板只读展示这两个值（编辑在插件管理器的配置页）。
+    assert "config.allow_insecure_http" in panel
+    assert "config.tls_insecure" in panel
+    # 授权卡片要把后端回显的开关显示出来，并给出打不开链接时的排查提示。
     assert "conn.allow_insecure_http" in panel
     assert "panel.login.connectionWarn" in panel
+
+    # 宿主的配置页靠 JSON Schema 渲染，schema 必须覆盖配置里的每个键。
+    schema = json.loads((PLUGIN_DIR / "config.schema.json").read_text(encoding="utf-8"))
+    declared = set(schema["properties"]["fnos_cli"]["properties"])
+    example = tomllib.loads((PLUGIN_DIR / "config.example.toml").read_text(encoding="utf-8"))["fnos_cli"]
+    missing = set(example) - declared
+    assert not missing, f"config.schema.json 未声明: {sorted(missing)}"
+    assert set(manifest) <= declared, (
+        f"plugin.toml [fnos_cli] 有 schema 未声明的键: {sorted(set(manifest) - declared)}"
+    )
+
+    # Settings 类也要声明这两个字段，否则宿主配置校验会把它们丢掉。
+    source = ENTRY_MODULE.read_text(encoding="utf-8")
+    assert "allow_insecure_http: bool = SettingsField(" in source
+    assert "tls_insecure: bool = SettingsField(" in source
+
+
+def test_panel_does_not_call_an_undefined_config_action() -> None:
+    """面板不得调用仓库里不存在的动作。
+
+    回归点：面板「保存配置」调 update_config，但插件没有这个入口，
+    plugin.toml 也没有 config:write 权限，按钮永远是 disabled 状态。
+    配置改由插件管理器的配置页（config.schema.json 驱动）编辑。
+    """
+    source = ENTRY_MODULE.read_text(encoding="utf-8")
+    assert "@plugin_entry(\n        id=\"update_config\"" not in source
+    panel = (PLUGIN_DIR / "ui" / "panel.tsx").read_text(encoding="utf-8")
+    # 只查真正会触发调用的两种写法；注释里出现这个词是在说明为什么不调用。
+    assert 'actionById(actions || [], "update_config")' not in panel
+    assert 'callConfirmed(props, "update_config"' not in panel
+    assert 'callWithConfirm(props, confirm, t, "update_config"' not in panel
+    manifest = _load_manifest()["plugin"]["ui"]["panel"][0]
+    assert "config:write" not in manifest["permissions"], "面板不再写配置，不需要 config:write"
+
+
+def test_panel_asks_for_confirmation_before_write_operations() -> None:
+    """面板执行写操作前必须真的问一次用户。
+
+    回归点：callConfirmed 第一次调用就带 confirmed: true，后端永远返回不了
+    clarify，面板上输入 `power poweroff` 直接执行，文档承诺的确认框形同虚设。
+    现在 run 走 callWithConfirm：先不带 confirmed，拿到 clarify 再弹框。
+    """
+    panel = (PLUGIN_DIR / "ui" / "panel.tsx").read_text(encoding="utf-8")
+    assert "async function callWithConfirm(" in panel
+    assert 'await props.api.call(actionId, { ...payload })' in panel, (
+        "首次调用不能预先带上 confirmed"
+    )
+    assert 'first.status === "clarify"' in panel
+    assert "panel.confirmWrite.title" in panel
+    # run 的两个调用点都必须走带确认的版本。
+    assert 'callWithConfirm(props, confirm, t, "run"' in panel
+    assert panel.count('callWithConfirm(props, confirm, t, "run"') == 2
+    # 只有调用方已自行确认的路径（logout）才允许直接用 callConfirmed。
+    assert 'callConfirmed(props, "logout"' in panel
 
 
 def test_launcher_scripts_are_not_modified() -> None:

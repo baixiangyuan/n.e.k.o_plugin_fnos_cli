@@ -8,7 +8,7 @@ keywords = [
     "docker", "download", "下载", "app", "应用中心", "log", "日志", "monitor", "监控",
     "network", "网络", "ssh", "user", "用户", "百度网盘", "baidu", "netdisk", "photo", "相册",
 ]
-version = "0.5.4"
+version = "0.5.5"
 type = "plugin"
 entry = "plugin.plugins.fnos_cli.plugin:FnOsCliPlugin"
 
@@ -59,7 +59,7 @@ profile = "home"
 require_confirmation = true
 # CLI 可执行文件最长执行秒数。
 timeout_seconds = 300
-# 工作目录。留空则使用插件状态目录下的 run 目录。
+# CLI 工作目录。留空则使用插件目录（与 _work_dir() 的实现一致）。
 working_dir = ""
 # 是否允许把命令输出原样返回给调用方（LLM/Agent 会看到设备返回内容）。
 return_raw_output = false
